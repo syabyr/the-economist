@@ -4,6 +4,8 @@
 from bs4 import BeautifulSoup
 import requests
 import json
+import os
+import urllib.request
 from html5_parser import parse
 from lxml import etree
 from collections import defaultdict
@@ -201,18 +203,26 @@ def gen_md(raw):
     # 设置文件名
     mdFile = MdUtils(file_name=data['headline'])
 
-    #mdFile.new_header(level=6, title=data['subheadline'])
+    # url
+    opener=urllib.request.build_opener()
+    opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1941.0 Safari/537.36')]
+    urllib.request.install_opener(opener)
+
+    mdFile.write('###### '+data['subheadline'])
     mdFile.new_header(level=1, title=data['headline'])
-    #mdFile.new_header(level=5, title=data['description'])
+    mdFile.write('##### '+data['description'])
     #
     img_url = data['image']['main']['url']['canonical']
+    #print(img_url)
     img_path = img_url.replace('https://www.economist.com/media-assets/','')
-    print(img_path)
-    print(type(img_path))
+    #print(img_path)
+    #print(type(img_path))
     #mdFile.new_line(mdFile.new_reference_image(text='aaa',path=img_path, reference_tag='im'))
+    os.makedirs('images', exist_ok=True)
+    urllib.request.urlretrieve(img_url, 'images/'+img_url.split('/')[-1])
+    mdFile.write('\n![image](images/'+img_url.split('/')[-1]+')')
 
-    mdFile.write('\n![image]('+img_path+')')
-
+    mdFile.write('\n>'+data['datePublishedString'])
     #temp = data['body']
     #print(temp)
 
@@ -221,10 +231,24 @@ def gen_md(raw):
     for item in body['body']:
         #mdFile.new_paragraph(item['text'])
         if(item['type'] == 'CROSSHEAD'):
-            print(item['text'])
+            #print(item['text'])
             mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
+        elif(item['type'] == 'PARAGRAPH'):
+            #print(item['text'])
+            mdFile.new_paragraph(item['text'])
+        elif(item['type'] == 'IMAGE'):
+            # download image
+            os.makedirs('images', exist_ok=True)
+            urllib.request.urlretrieve(item['url'], 'images/'+item['url'].split('/')[-1])
+            ##response = requests.get(item['url'])
+            #print(item['url'])
+            sub_img_path = item['url'].replace('https://www.economist.com/content-assets/','')
+            mdFile.write('\n![image]('+sub_img_path+')')
         else:
-            mdFile.new_paragraph(item['textHtml'])
+            print(item)
+            #mdFile.new_line(mdFile.new_reference_image(text='aaa',path=item['url'], reference_tag='im'))
+            #print(item)
+            #mdFile.new_paragraph(item['textHtml'])
             #mdFile.new_paragraph(item['text'])
 
     mdFile.create_md_file()
@@ -244,4 +268,4 @@ def parse_page(url):
     #    f1.write(content.encode('utf-8'))
     #print(content)
 
-ans = parse_page('https://www.economist.com/china/2023/11/02/xi-jinping-is-trying-to-fuse-the-ideologies-of-marx-and-confucius')
+ans = parse_page('https://www.economist.com/china/2023/11/02/china-and-bhutan-aim-to-resolve-a-long-running-border-dispute')

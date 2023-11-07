@@ -190,37 +190,44 @@ def preprocess_raw_html(raw):
     raw = etree.tostring(root, encoding='unicode')
     return raw
 
-def gen_md(raw):
+def gen_md(raw,path):
+    #print(path)
     root = parse(raw)
     script = root.xpath('//script[@id="__NEXT_DATA__"]')
     if script:
         try:
             data = json.loads(script[0].text)['props']['pageProps']['content']
+            with open('next.json', 'wb+') as next:
+                next.write(script[0].text.encode('utf-8'))
         except JSONHasNoContent:
             pass
         del data['ad']
         # print(data);
     # 设置文件名
-    mdFile = MdUtils(file_name=data['headline'])
+    #mdFile = MdUtils(file_name=data['headline'])
+    mdFile = MdUtils(file_name=path+data['headline']+'.md')
 
-    # url
+    # 下载图片的agent
     opener=urllib.request.build_opener()
     opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1941.0 Safari/537.36')]
     urllib.request.install_opener(opener)
 
+    # 非标设置,手动写入
     mdFile.write('###### '+data['subheadline'])
     mdFile.new_header(level=1, title=data['headline'])
     mdFile.write('##### '+data['description'])
-    #
-    img_url = data['image']['main']['url']['canonical']
-    #print(img_url)
-    img_path = img_url.replace('https://www.economist.com/media-assets/','')
-    #print(img_path)
-    #print(type(img_path))
-    #mdFile.new_line(mdFile.new_reference_image(text='aaa',path=img_path, reference_tag='im'))
-    os.makedirs('images', exist_ok=True)
-    urllib.request.urlretrieve(img_url, 'images/'+img_url.split('/')[-1])
-    mdFile.write('\n![image](images/'+img_url.split('/')[-1]+')')
+
+    img_url = None
+    if(data['image']['main'] != None):
+        img_url = data['image']['main']['url']['canonical']
+    elif(data['image']['promo'] != None):
+        img_url = data['image']['promo']['url']['canonical']
+    
+    if(img_url != None):
+        # download image
+        os.makedirs(path+'/images', exist_ok=True)
+        urllib.request.urlretrieve(img_url, path+'/images/'+img_url.split('/')[-1])
+        mdFile.write('\n![image](images/'+img_url.split('/')[-1]+')')
 
     mdFile.write('\n>'+data['datePublishedString'])
     #temp = data['body']
@@ -229,21 +236,34 @@ def gen_md(raw):
     # 正文内容
     body = json.loads(script[0].text)['props']['pageProps']['cp2Content']
     for item in body['body']:
-        #mdFile.new_paragraph(item['text'])
         if(item['type'] == 'CROSSHEAD'):
-            #print(item['text'])
             mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
         elif(item['type'] == 'PARAGRAPH'):
-            #print(item['text'])
-            mdFile.new_paragraph(item['text'])
+            print(item)
+            mdFile.new_paragraph(item['textHtml'])
         elif(item['type'] == 'IMAGE'):
             # download image
-            os.makedirs('images', exist_ok=True)
-            urllib.request.urlretrieve(item['url'], 'images/'+item['url'].split('/')[-1])
-            ##response = requests.get(item['url'])
-            #print(item['url'])
-            sub_img_path = item['url'].replace('https://www.economist.com/content-assets/','')
-            mdFile.write('\n![image]('+sub_img_path+')')
+            os.makedirs(path+'/images', exist_ok=True)
+            urllib.request.urlretrieve(item['url'], path+'/images/'+item['url'].split('/')[-1])
+            picname = item['url'].split('/')[-1]
+            mdFile.write('\n![image](images/'+picname+')')
+        elif(item['type'] == 'INFOGRAPHIC'):
+            # download image
+            print(item['fallback']['url'])
+            os.makedirs(path+'images', exist_ok=True)
+            urllib.request.urlretrieve(item['fallback']['url'], path+'images/'+item['fallback']['url'].split('/')[-1])
+            mdFile.write('\n![image]('+'images/'+item['fallback']['url'].split('/')[-1]+')')
+        elif(item['type'] == 'BOOK_INFO'):
+            mdFile.new_paragraph(item['textHtml'])
+            #https://www.economist.com/the-economist-reads/2023/11/03/six-books-you-didnt-know-were-propaganda
+            #https://www.economist.com/culture/2023/11/02/hong-kongs-year-of-protest-now-feels-like-a-mirage
+        elif(item['type'] == 'INFOBOX'):
+            components = item['components']
+            for component in components:
+                mdFile.new_paragraph(component['textHtml'])
+        elif(item['type'] == 'VIDEO'):
+            #https://www.economist.com/europe/2023/10/29/trenches-and-tech-on-ukraines-southern-front
+            pass
         else:
             print(item)
             #mdFile.new_line(mdFile.new_reference_image(text='aaa',path=item['url'], reference_tag='im'))
@@ -261,11 +281,17 @@ def parse_page(url):
     #soup = BeautifulSoup(html_doc.content, 'html.parser');
     #print(soup)
 
-    gen_md(html_doc.content)
-
-    #content = preprocess_raw_html(html_doc.content);
-    #with open('processed-1.html', 'wb+') as f1:
-    #    f1.write(content.encode('utf-8'))
+    content = preprocess_raw_html(html_doc.content);
+    with open('processed-1.html', 'wb+') as f1:
+        f1.write(content.encode('utf-8'))
     #print(content)
 
-ans = parse_page('https://www.economist.com/china/2023/11/02/china-and-bhutan-aim-to-resolve-a-long-running-border-dispute')
+    gen_md(html_doc.content,'./temp/')
+
+#ans = parse_page('https://www.economist.com/international/2023/11/02/israel-is-more-popular-than-social-media-posts-suggest')
+#ans = parse_page('https://www.economist.com/united-states/2023/11/02/can-a-presley-win-mississippi')
+#ans = parse_page('https://www.economist.com/europe/2023/11/01/ukraines-commander-in-chief-on-the-breakthrough-he-needs-to-beat-russia')
+#ans = parse_page('https://www.economist.com/economic-and-financial-indicators/2023/11/02/economic-data-commodities-and-markets')
+#ans = parse_page('https://www.economist.com/the-economist-reads/2023/11/03/six-books-you-didnt-know-were-propaganda')
+#ans = parse_page('https://www.economist.com/business/2023/10/30/how-to-get-the-lying-out-of-hiring')
+ans = parse_page('https://www.economist.com/culture/2023/11/02/a-show-on-manet-and-degas-examines-creative-rivalry')

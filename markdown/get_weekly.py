@@ -110,6 +110,7 @@ def gen_md(raw,path):
         if(item['type'] == 'CROSSHEAD'):
             mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
         elif(item['type'] == 'PARAGRAPH'):
+            # 根据个人喜好,选择是否使用html格式
             mdFile.new_paragraph(item['textHtml'])
         elif(item['type'] == 'IMAGE'):
             # download image

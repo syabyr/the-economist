@@ -1,14 +1,12 @@
-
-
-
-from bs4 import BeautifulSoup
+import os
+import sys
 import requests
 import json
-import os
 import urllib.request
-from html5_parser import parse
+from bs4 import BeautifulSoup
 from lxml import etree
 from collections import defaultdict
+from html5_parser import parse
 from mdutils.mdutils import MdUtils
 
 
@@ -203,15 +201,14 @@ def gen_md(raw,path):
             pass
         del data['ad']
         # print(data);
-    # 设置文件名
-    #mdFile = MdUtils(file_name=data['headline'])
-    mdFile = MdUtils(file_name=path+data['headline']+'.md')
 
     # 下载图片的agent
     opener=urllib.request.build_opener()
     opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1941.0 Safari/537.36')]
     urllib.request.install_opener(opener)
 
+    # 设置文件名
+    mdFile = MdUtils(file_name=path+data['headline']+'.md')
     # 非标设置,手动写入
     mdFile.write('###### '+data['subheadline'])
     mdFile.new_header(level=1, title=data['headline'])
@@ -235,11 +232,17 @@ def gen_md(raw,path):
 
     # 正文内容
     body = json.loads(script[0].text)['props']['pageProps']['cp2Content']
+
+    if('body' not in body):
+        print(body)
+        return -1
+
+
     for item in body['body']:
         if(item['type'] == 'CROSSHEAD'):
             mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
         elif(item['type'] == 'PARAGRAPH'):
-            print(item)
+            # 根据个人喜好,选择是否使用html格式
             mdFile.new_paragraph(item['textHtml'])
         elif(item['type'] == 'IMAGE'):
             # download image
@@ -259,8 +262,14 @@ def gen_md(raw,path):
             #https://www.economist.com/culture/2023/11/02/hong-kongs-year-of-protest-now-feels-like-a-mirage
         elif(item['type'] == 'INFOBOX'):
             components = item['components']
+            #print(item)
             for component in components:
-                mdFile.new_paragraph(component['textHtml'])
+                if(component['type'] == 'PARAGRAPH'):
+                    mdFile.new_paragraph(component['textHtml'])
+                elif(component['type'] == 'UNORDERED_LIST'):
+                    innerItems = component['items']
+                    for innerItem in innerItems:
+                        mdFile.new_paragraph(innerItem['textHtml'])
         elif(item['type'] == 'VIDEO'):
             #https://www.economist.com/europe/2023/10/29/trenches-and-tech-on-ukraines-southern-front
             pass
@@ -288,10 +297,5 @@ def parse_page(url):
 
     gen_md(html_doc.content,'./temp/')
 
-#ans = parse_page('https://www.economist.com/international/2023/11/02/israel-is-more-popular-than-social-media-posts-suggest')
-#ans = parse_page('https://www.economist.com/united-states/2023/11/02/can-a-presley-win-mississippi')
-#ans = parse_page('https://www.economist.com/europe/2023/11/01/ukraines-commander-in-chief-on-the-breakthrough-he-needs-to-beat-russia')
-#ans = parse_page('https://www.economist.com/economic-and-financial-indicators/2023/11/02/economic-data-commodities-and-markets')
-#ans = parse_page('https://www.economist.com/the-economist-reads/2023/11/03/six-books-you-didnt-know-were-propaganda')
-#ans = parse_page('https://www.economist.com/business/2023/10/30/how-to-get-the-lying-out-of-hiring')
-ans = parse_page('https://www.economist.com/culture/2023/11/02/a-show-on-manet-and-degas-examines-creative-rivalry')
+
+ans = parse_page('https://www.economist.com/briefing/2023/10/23/can-the-palestinian-authority-control-gaza-if-hamas-is-ousted')

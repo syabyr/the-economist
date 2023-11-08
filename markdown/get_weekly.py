@@ -74,15 +74,14 @@ def gen_md(raw,path):
             pass
         del data['ad']
         # print(data);
-    # 设置文件名
-    #mdFile = MdUtils(file_name=data['headline'])
-    mdFile = MdUtils(file_name=path+data['headline']+'.md')
 
     # 下载图片的agent
     opener=urllib.request.build_opener()
     opener.addheaders=[('User-Agent','Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1941.0 Safari/537.36')]
     urllib.request.install_opener(opener)
 
+    # 设置文件名
+    mdFile = MdUtils(file_name=path+data['headline']+'.md')
     # 非标设置,手动写入
     mdFile.write('###### '+data['subheadline'])
     mdFile.new_header(level=1, title=data['headline'])
@@ -106,6 +105,12 @@ def gen_md(raw,path):
 
     # 正文内容
     body = json.loads(script[0].text)['props']['pageProps']['cp2Content']
+
+    if('body' not in body):
+        print(body)
+        return -1
+
+
     for item in body['body']:
         if(item['type'] == 'CROSSHEAD'):
             mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
@@ -130,8 +135,14 @@ def gen_md(raw,path):
             #https://www.economist.com/culture/2023/11/02/hong-kongs-year-of-protest-now-feels-like-a-mirage
         elif(item['type'] == 'INFOBOX'):
             components = item['components']
+            #print(item)
             for component in components:
-                mdFile.new_paragraph(component['textHtml'])
+                if(component['type'] == 'PARAGRAPH'):
+                    mdFile.new_paragraph(component['textHtml'])
+                elif(component['type'] == 'UNORDERED_LIST'):
+                    innerItems = component['items']
+                    for innerItem in innerItems:
+                        mdFile.new_paragraph(innerItem['textHtml'])
         elif(item['type'] == 'VIDEO'):
             #https://www.economist.com/europe/2023/10/29/trenches-and-tech-on-ukraines-southern-front
             pass
@@ -148,9 +159,11 @@ def gen_md(raw,path):
 
 # start
 
-os.makedirs(date, exist_ok=True)
-
+# 获取每周文章列表
 ans = parse_index(date)
+
+date = date.replace('-','')
+os.makedirs(date, exist_ok=True)
 
 index = 0
 for tile in ans:
@@ -165,7 +178,11 @@ for tile in ans:
         print(article['description'])
         print(article['url'])
         html_doc = requests.get(article['url'])
-        gen_md(html_doc.content, date+'/'+str(index)+'.'+tile[0]+'/')
+        ret = gen_md(html_doc.content, date+'/'+str(index)+'.'+tile[0]+'/')
+        if(ret == -1):
+            print('error:'+article['url'])
+            continue
 
 
-#print(ans)
+# todo 异常处理
+# 1. 无法获取到body 疑似下载失败,暂时打印日志,手动重试

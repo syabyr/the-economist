@@ -125,10 +125,14 @@ def gen_md(raw,path):
             mdFile.write('\n![image](images/'+picname+')')
         elif(item['type'] == 'INFOGRAPHIC'):
             # download image
-            print(item['fallback']['url'])
-            os.makedirs(path+'images', exist_ok=True)
-            urllib.request.urlretrieve(item['fallback']['url'], path+'images/'+item['fallback']['url'].split('/')[-1])
-            mdFile.write('\n![image]('+'images/'+item['fallback']['url'].split('/')[-1]+')')
+            #print(item['fallback']['url'])
+            if(item['fallback']['url'] == None):
+                # https://www.economist.com/europe/2023/10/12/our-european-economic-pentathlon
+                continue
+            else:
+                os.makedirs(path+'images', exist_ok=True)
+                urllib.request.urlretrieve(item['fallback']['url'], path+'images/'+item['fallback']['url'].split('/')[-1])
+                mdFile.write('\n![image]('+'images/'+item['fallback']['url'].split('/')[-1]+')')
         elif(item['type'] == 'BOOK_INFO'):
             mdFile.new_paragraph(item['textHtml'])
             #https://www.economist.com/the-economist-reads/2023/11/03/six-books-you-didnt-know-were-propaganda

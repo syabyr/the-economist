@@ -233,7 +233,7 @@ def gen_md(raw,path):
     # 正文内容
     body = json.loads(script[0].text)['props']['pageProps']['cp2Content']
 
-    mdFile.write('\n\n')
+    #mdFile.write('\n\n')
 
     if('body' not in body):
         print('body:',body)

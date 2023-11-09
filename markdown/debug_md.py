@@ -244,7 +244,7 @@ def gen_md(raw,path):
             for child in children:
                 print('child:',child)
                 if(child['type'] == 'text'):
-                    mdFile.write(child['data'])
+                    mdFile.write(child['data'].replace('$','\$'))
                     mdFile.write('\n')
                 if(child['type'] == 'tag'):
                     attrs = child['attribs']
@@ -282,7 +282,9 @@ def gen_md(raw,path):
                 mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
             elif(item['type'] == 'PARAGRAPH'):
                 # 根据个人喜好,选择是否使用html格式
-                mdFile.new_paragraph(item['textHtml'])
+                #writeData=item['textHtml'].replace('$','\\$')
+                #print(writeData)
+                mdFile.new_paragraph(item['textHtml'].replace('$','\\$'))
             elif(item['type'] == 'IMAGE'):
                 # download image
                 os.makedirs(path+'/images', exist_ok=True)
@@ -334,7 +336,7 @@ def parse_page(url):
     #soup = BeautifulSoup(html_doc.content, 'html.parser');
     #print(soup)
 
-    content = preprocess_raw_html(html_doc.content);
+    content = preprocess_raw_html(html_doc.content)
     with open('processed-1.html', 'wb+') as f1:
         f1.write(content.encode('utf-8'))
     #print(content)
@@ -342,4 +344,4 @@ def parse_page(url):
     gen_md(html_doc.content,'./temp/')
 
 
-ans = parse_page('https://www.economist.com/britain/2023/01/11/how-many-excess-deaths-in-england-are-associated-with-a-and-e-delays')
+ans = parse_page('https://www.economist.com/the-world-this-week/2023/11/02/business')

@@ -117,7 +117,7 @@ def gen_md(raw,path):
             for child in children:
                 #print('child:',child)
                 if(child['type'] == 'text'):
-                    mdFile.write(child['data'])
+                    mdFile.write(child['data'].replace('$','\$'))
                     mdFile.write('\n')
                 if(child['type'] == 'tag'):
                     attrs = child['attribs']
@@ -155,7 +155,7 @@ def gen_md(raw,path):
                 mdFile.new_paragraph(item['text'],bold_italics_code='bi', color='purple')
             elif(item['type'] == 'PARAGRAPH'):
                 # 根据个人喜好,选择是否使用html格式
-                mdFile.new_paragraph(item['textHtml'])
+                mdFile.new_paragraph(item['textHtml'].replace('$','\\$'))
             elif(item['type'] == 'IMAGE'):
                 # download image
                 os.makedirs(path+'/images', exist_ok=True)

@@ -165,9 +165,11 @@ def gen_md(raw,path):
             elif(item['type'] == 'INFOGRAPHIC'):
                 # download image
                 print(item);
-                print(item['fallback']['url'])
-                if(item['fallback']['url'] == None):
+                #print(item['fallback']['url'])
+                if(item['fallback'] == None):
                     # https://www.economist.com/europe/2023/10/12/our-european-economic-pentathlon
+                    continue
+                elif(item['fallback']['url'] == None):
                     continue
                 else:
                     os.makedirs(path+'images', exist_ok=True)

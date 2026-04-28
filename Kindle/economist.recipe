@@ -1,9 +1,23 @@
 #!/usr/bin/env  python
+<<<<<<< HEAD
+import hashlib
+import gzip
+=======
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
 import json
+import os
+import re
 import time
 from datetime import datetime, timedelta
+<<<<<<< HEAD
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
+from uuid import uuid4
+from html import unescape
+=======
 from urllib.parse import quote, urlencode
 from uuid import uuid4
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
 
 from html5_parser import parse
 from lxml import etree
@@ -22,6 +36,386 @@ def safe_dict(data, *names):
     return ans
 
 
+<<<<<<< HEAD
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def strip_html(fragment):
+    text = re.sub(r'<[^>]+>', ' ', fragment or '')
+    text = unescape(text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def html_attrs(class_name='', style=''):
+    attrs = ''
+    if class_name:
+        attrs += f' class="{class_name}"'
+    if style:
+        attrs += f' style="{style}"'
+    return attrs
+
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def maybe_decompress(payload):
+    if payload[:2] == b'\x1f\x8b':
+        return gzip.decompress(payload)
+    return payload
+
+
+def cache_filename_from_url(url):
+    parsed = urlparse(url)
+    ext = os.path.splitext(parsed.path)[1] or '.bin'
+    return hashlib.sha256(url.encode('utf-8')).hexdigest() + ext
+
+
+def resolve_local_image_src(resolver, url):
+    if resolver is None:
+        return url
+    if hasattr(resolver, 'local_image_src'):
+        return resolver.local_image_src(url)
+    owner = getattr(resolver, 'owner', None)
+    if owner is not None and hasattr(owner, 'local_image_src'):
+        return owner.local_image_src(url)
+    return url
+
+
+class BilingualTranslator:
+    def __init__(self):
+        self.enabled = env_flag('ECONOMIST_TRANSLATE_ZH')
+        self.provider = os.environ.get('ECONOMIST_TRANSLATE_PROVIDER', 'openai').strip().lower()
+        self.source_language = os.environ.get(
+            'ECONOMIST_TRANSLATE_SOURCE_LANGUAGE', 'English'
+        )
+        self.target_language = os.environ.get(
+            'ECONOMIST_TRANSLATE_TARGET_LANGUAGE', 'Simplified Chinese'
+        )
+        self.base_url = self.get_base_url()
+        self.api_key = self.get_api_key()
+        self.model = os.environ.get('ECONOMIST_TRANSLATE_MODEL', self.default_model())
+        self.timeout = int(os.environ.get('ECONOMIST_TRANSLATE_TIMEOUT', '120'))
+        self.cache_path = os.environ.get(
+            'ECONOMIST_TRANSLATE_CACHE',
+            os.path.join(os.getcwd(), 'economist_translate_cache.json'),
+        )
+        self.cache = self.load_cache()
+
+    def get_base_url(self):
+        explicit = os.environ.get('ECONOMIST_TRANSLATE_BASE_URL')
+        if explicit:
+            return explicit.rstrip('/')
+        if self.provider == 'nvidia':
+            return 'https://integrate.api.nvidia.com/v1'
+        return (os.environ.get('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
+
+    def get_api_key(self):
+        return (
+            os.environ.get('ECONOMIST_TRANSLATE_API_KEY')
+            or os.environ.get('NVIDIA_API_KEY')
+            or os.environ.get('OPENAI_API_KEY')
+            or ''
+        )
+
+    def default_model(self):
+        if self.provider == 'nvidia':
+            return 'nvidia/riva-translate-4b-instruct-v1.1'
+        return 'gpt-4.1-mini'
+
+    def system_prompt(self):
+        if self.provider == 'nvidia':
+            return (
+                f'You are an expert at translating HTML fragments from '
+                f'{self.source_language} to {self.target_language}. '
+                'Preserve all inline HTML tags, links, emphasis, superscripts, '
+                'subscripts, and text order. Return only the translated HTML fragment.'
+            )
+        return (
+            f'Translate the provided HTML fragment into {self.target_language}. '
+            'Preserve inline HTML tags, links, emphasis, superscripts, subscripts, '
+            'and text order. Return only the translated HTML fragment.'
+        )
+
+    def user_prompt(self, fragment):
+        if self.provider == 'nvidia':
+            return (
+                f'What is the {self.target_language} translation of the following HTML '
+                f'fragment from {self.source_language}?\n\n{fragment}'
+            )
+        return fragment
+
+    def load_cache(self):
+        if not self.enabled:
+            return {}
+        try:
+            with open(self.cache_path, 'r', encoding='utf-8') as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    def save_cache(self):
+        directory = os.path.dirname(self.cache_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(self.cache_path, 'w', encoding='utf-8') as fh:
+            json.dump(self.cache, fh, ensure_ascii=False, indent=2, sort_keys=True)
+
+    def translate_html(self, fragment):
+        if not self.enabled:
+            return ''
+        source_text = strip_html(fragment)
+        if len(source_text) < 2:
+            return ''
+        cache_key = hashlib.sha256(
+            (self.model + '\n' + fragment).encode('utf-8')
+        ).hexdigest()
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        if not self.api_key:
+            raise RuntimeError(
+                'ECONOMIST_TRANSLATE_ZH is enabled but no translation API key is set.'
+            )
+
+        payload = {
+            'model': self.model,
+            'temperature': 0,
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': self.system_prompt(),
+                },
+                {'role': 'user', 'content': self.user_prompt(fragment)},
+            ],
+        }
+        req = UrlRequest(
+            self.base_url + '/chat/completions',
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Authorization': 'Bearer ' + self.api_key,
+                'Content-Type': 'application/json',
+            },
+        )
+        with urlopen(req, timeout=self.timeout) as resp:
+            raw = json.loads(resp.read().decode('utf-8'))
+        translated = raw['choices'][0]['message']['content'].strip()
+        self.cache[cache_key] = translated
+        self.save_cache()
+        return translated
+
+
+def render_bilingual_inline(content_html, translator=None):
+    if translator is None:
+        return content_html
+    translated = translator.translate_html(content_html)
+    if not translated:
+        return content_html
+    return (
+        content_html
+        + '<br><span class="translated-cn translated-inline">'
+        + translated
+        + '</span>'
+    )
+
+
+def render_bilingual_block(tag, content_html, translator=None, style='', class_name=''):
+    attrs = html_attrs(class_name=class_name, style=style)
+    original = f'<{tag}{attrs}>{content_html}</{tag}>'
+    if translator is None:
+        return original
+    translated = translator.translate_html(content_html)
+    if not translated:
+        return original
+    cn_attrs = html_attrs(
+        class_name='translated-cn' if not class_name else class_name + ' translated-cn',
+        style=style,
+    )
+    return original + f'<{tag}{cn_attrs}>{translated}</{tag}>'
+
+
+def process_web_list(li_node, translator=None):
+    li_html = ''
+    for li in li_node['items']:
+        if li.get('textHtml'):
+            item_html = li['textHtml']
+        elif li.get('textJson'):
+            item_html = parse_textjson(li['textJson'])
+        else:
+            item_html = li.get('text', '')
+        li_html += f'<li>{render_bilingual_inline(item_html, translator)}</li>'
+    return '<ul>' + li_html + '</ul>'
+
+
+def process_info_box(bx, translator=None):
+    info = ''
+    for x in safe_dict(bx, 'components'):
+        info += f'<blockquote>{process_web_node(x, translator)}</blockquote>'
+    return info
+
+
+def parse_txt(ty):
+    typ = ty.get('type', '')
+    children = ty.get('children', [])
+    href = '#'
+    attributes = ty.get('attributes') or ()
+    for a in attributes:
+        if a.get('name') == 'href':
+            href = a.get('value', href)
+            break
+
+    tag_map = {
+        'text': lambda: [ty.get('value', '')],
+        'scaps': lambda: [
+            f'<span style="text-transform: uppercase; font-size: 0.85em; letter-spacing: 0.05em;">{"".join(parse_txt(c))}</span>'
+            for c in children
+        ],
+        'bold': lambda: [f'<b>{"".join(parse_txt(c))}</b>' for c in children],
+        'drop_caps': lambda: [f'<b>{"".join(parse_txt(c))}</b>' for c in children],
+        'italic': lambda: [f'<i>{"".join(parse_txt(c))}</i>' for c in children],
+        'linebreak': lambda: ['<br>'],
+        'external_link': lambda: [
+            f'<a href="{href}">{"".join(parse_txt(c))}</a>' for c in children
+        ],
+        'internal_link': lambda: [
+            f'<a href="{href}">{"".join(parse_txt(c))}</a>' for c in children
+        ],
+        'ufinish': lambda: [text for c in children for text in parse_txt(c)],
+        'subscript': lambda: [f'<sub>{"".join(parse_txt(c))}</sub>' for c in children],
+        'superscript': lambda: [f'<sup>{"".join(parse_txt(c))}</sup>' for c in children],
+    }
+
+    if typ in tag_map:
+        yield from tag_map[typ]()
+    else:
+        print('** ', typ)
+
+
+def parse_textjson(nt):
+    return ''.join(''.join(parse_txt(n)) for n in nt)
+
+
+def process_web_node(node, translator=None):
+    ntype = node.get('type', '')
+    skip_images = env_flag('ECONOMIST_SKIP_IMAGES')
+    if ntype == 'CROSSHEAD':
+        if node.get('textHtml'):
+            return render_bilingual_block('h4', node.get('textHtml'), translator)
+        return render_bilingual_block('h4', node.get('text', ''), translator)
+    elif ntype in ['PARAGRAPH', 'BOOK_INFO']:
+        if node.get('textHtml'):
+            return '\n' + render_bilingual_block('p', node.get('textHtml'), translator)
+        elif node.get('textJson'):
+            return '\n' + render_bilingual_block(
+                'p', parse_textjson(node['textJson']), translator
+            )
+        return '\n' + render_bilingual_block('p', node.get('text', ''), translator)
+    elif (ntype == 'IMAGE') or (node.get('__typename', '') == 'ImageComponent'):
+        if skip_images:
+            cap = ''
+            if node.get('caption'):
+                if node['caption'].get('textHtml') is not None:
+                    cap = node['caption']['textHtml']
+                elif node['caption'].get('textJson') is not None:
+                    cap = parse_textjson(node['caption']['textJson'])
+                elif node['caption'].get('text') is not None:
+                    cap = node['caption']['text']
+            if cap:
+                return render_bilingual_block(
+                    'div',
+                    cap,
+                    translator,
+                    style='text-align:center; font-size:small;',
+                    class_name='image-caption',
+                )
+            return ''
+        alt = '' if node.get('altText') is None else node.get('altText')
+        cap = ''
+        if node.get('caption'):
+            if node['caption'].get('textHtml') is not None:
+                cap = node['caption']['textHtml']
+            elif node['caption'].get('textJson') is not None:
+                cap = parse_textjson(node['caption']['textJson'])
+            elif node['caption'].get('text') is not None:
+                cap = node['caption']['text']
+        caption = ''
+        if cap:
+            caption = render_bilingual_block(
+                'div',
+                cap,
+                translator,
+                style='text-align:center; font-size:small;',
+                class_name='image-caption',
+            )
+        image_url = resolve_local_image_src(translator, node["url"])
+        return f'<div><img src="{image_url}" title="{alt}"></div>{caption}'
+    elif ntype == 'PULL_QUOTE':
+        if node.get('textHtml'):
+            return render_bilingual_block('blockquote', node.get('textHtml'), translator)
+        elif node.get('textJson'):
+            return render_bilingual_block(
+                'blockquote', parse_textjson(node['textJson']), translator
+            )
+        return render_bilingual_block('blockquote', node.get('text', ''), translator)
+    elif ntype == 'BLOCK_QUOTE':
+        if node.get('textHtml'):
+            return render_bilingual_block(
+                'blockquote', f'<i>{node.get("textHtml")}</i>', translator
+            )
+        elif node.get('textJson'):
+            return render_bilingual_block(
+                'blockquote', f'<i>{parse_textjson(node["textJson"])}</i>', translator
+            )
+        return render_bilingual_block(
+            'blockquote', f'<i>{node.get("text", "")}</i>', translator
+        )
+    elif ntype == 'DIVIDER':
+        return '<hr>'
+    elif ntype == 'INFOGRAPHIC':
+        if node.get('fallback'):
+            return process_web_node(node['fallback'], translator)
+    elif ntype == 'INFOBOX':
+        return process_info_box(node, translator)
+    elif ntype == 'UNORDERED_LIST':
+        if node.get('items'):
+            return process_web_list(node, translator)
+    elif ntype:
+        print('** ', ntype)
+    return ''
+
+
+def load_article_from_json(raw, translator=None):
+    # open('/t/raw.json', 'w').write(raw)
+    body = ''
+    try:
+        data = json.loads(raw)['data']['findArticleByUrl']
+    except Exception:
+        try:
+            data = json.loads(raw)['props']['pageProps']['cp2Content']
+        except Exception:
+            data = json.loads(raw)['props']['pageProps']['content']
+
+    fly_title = data.get('flyTitle', '')
+    if fly_title:
+        body += render_bilingual_block(
+            'div',
+            fly_title,
+            translator,
+            style='color: red; font-size:small; font-weight:bold;',
+        )
+    body += render_bilingual_block('h1', data['headline'], translator)
+    if data.get('rubric') and data.get('rubric') is not None:
+        body += render_bilingual_block(
+            'div',
+            data.get('rubric', ''),
+            translator,
+            style='font-style: italic; color:#202020;',
+        )
+=======
 def process_web_list(li_node):
     li_html = ''
     for li in li_node['items']:
@@ -147,6 +541,7 @@ def load_article_from_json(raw):
     body += f'<h1>{data["headline"]}</h1>'
     if data.get('rubric') and data.get('rubric') is not None:
         body += f'<div style="font-style: italic; color:#202020;">{data.get("rubric", "")}</div>'
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
     try:
         date = data['dateModified']
     except Exception:
@@ -159,12 +554,20 @@ def load_article_from_json(raw):
         body += f'<p style="color: gray; font-size: small;">{dt + " | " + (data["dateline"])}</p>'
     main_image_url = safe_dict(data, 'leadComponent') or ''
     if main_image_url:
+<<<<<<< HEAD
+        body += process_web_node(data['leadComponent'], translator)
+=======
         body += process_web_node(data['leadComponent'])
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
     if data.get('byline'):
         if data['byline'] is not None:
             body += f'<p style="color: gray; font-size: small;"><i>{"By " + data["byline"]}</i></p>'
     for node in data.get('body'):
+<<<<<<< HEAD
+        body += process_web_node(node, translator)
+=======
         body += process_web_node(node)
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
     return '<html><body><article>' + body + '</article></body></html>'
 
 
@@ -214,9 +617,23 @@ class Economist(BasicNewsRecipe):
     extra_css = '''
         em { color:#202020; }
         img {display:block; margin:0 auto;}
+        .translated-cn {
+            color: #303030;
+            font-size: 0.92em;
+            line-height: 1.45;
+            margin-top: 0.2em;
+        }
+        .translated-inline {
+            display: inline-block;
+            margin-top: 0.2em;
+        }
     '''
 
     resolve_internal_links = True
+<<<<<<< HEAD
+    _translator = None
+=======
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
 
     delay = 1
     browser_type = 'webengine'
@@ -239,12 +656,17 @@ class Economist(BasicNewsRecipe):
     }
 
     def get_browser(self, *args, **kwargs):
+<<<<<<< HEAD
+        from calibre.utils.random_ua import common_english_word_ua
+        self.last_used_ua = kwargs['user_agent'] = kwargs.get('user_agent', common_english_word_ua())
+=======
         if self.from_web:
             kwargs['user_agent'] = (
                 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.6533.103 Mobile Safari/537.36 Liskov'
             )
         else:
             kwargs['user_agent'] = 'okhttp/4.12.0'
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
         br = BasicNewsRecipe.get_browser(self, *args, **kwargs)
         return br
 
@@ -282,6 +704,11 @@ class Economist(BasicNewsRecipe):
         }])]
 
     def parse_index(self):
+<<<<<<< HEAD
+        if env_flag('ECONOMIST_DISABLE_INTERNAL_LINKS'):
+            self.resolve_internal_links = False
+=======
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
         # return self.economist_test_article()
         edition_date = self.recipe_specific_options.get('date')
         if edition_date and isinstance(edition_date, str):
@@ -289,6 +716,199 @@ class Economist(BasicNewsRecipe):
             self.timefmt = ' [' + edition_date + ']'
         else:
             url = 'https://www.economist.com/weeklyedition'
+<<<<<<< HEAD
+        ans = self.economist_parse_index(url)
+        return self.economist_return_index(ans)
+
+    def economist_parse_index(self, url):
+        edition_date = self.recipe_specific_options.get('date')
+        edition = self.get_edition_index(edition_date if isinstance(edition_date, str) else None)
+        if edition:
+            return edition
+
+        soup = self.index_to_soup(url)
+        script_tag = soup.find('script', id='__NEXT_DATA__')
+        if script_tag is None:
+            self.log('Failed to get index with UA:', self.last_used_ua)
+            from calibre.utils.random_ua import random_common_chrome_user_agent
+            user_agent = random_common_chrome_user_agent()
+            self.log('Retrying with UA:', user_agent)
+            time.sleep(1)
+            self.browser = self.get_browser(user_agent=user_agent)
+            soup = self.index_to_soup(url)
+            script_tag = soup.find('script', id='__NEXT_DATA__')
+        if script_tag is None:
+            return []
+        data = json.loads(script_tag.string)
+        # open('/t/raw.json', 'w').write(json.dumps(data, indent=2, sort_keys=True))
+        self.description = safe_dict(
+            data, 'props', 'pageProps', 'content', 'headline'
+        )
+        self.timefmt = (
+            ' ['
+            + safe_dict(data, 'props', 'pageProps', 'content', 'formattedIssueDate')
+            + ']'
+        )
+        self.cover_url = (
+            safe_dict(data, 'props', 'pageProps', 'content', 'cover', 'url')
+            .replace(
+                'economist.com/',
+                'economist.com/cdn-cgi/image/width=960,quality=80,format=auto/',
+            )
+            .replace('SQ_', '').replace('_AS', '_AP')
+        )
+        self.log('Got cover:', self.cover_url)
+
+        feeds = []
+
+        for part in safe_dict(
+            data, 'props', 'pageProps', 'content', 'headerSections'
+        ) + safe_dict(data, 'props', 'pageProps', 'content', 'sections'):
+            section = safe_dict(part, 'name') or ''
+            if not section:
+                continue
+            self.log(section)
+
+            articles = []
+
+            for ar in part['articles']:
+                title = safe_dict(ar, 'headline') or ''
+                url = process_url(safe_dict(ar, 'url') or '')
+                if not title or not url:
+                    continue
+                desc = safe_dict(ar, 'rubric') or ''
+                sub = safe_dict(ar, 'flyTitle') or ''
+                if sub and section != sub:
+                    desc = sub + ' :: ' + desc
+                self.log('\t', title, '\n\t', desc, '\n\t\t', url)
+                articles.append({'title': title, 'url': url, 'description': desc})
+            feeds.append((section, articles))
+        d = self.recipe_specific_options.get('de')
+        if d and isinstance(d, str):
+            if d.lower().strip() == 'yes':
+                self.from_web = True
+            else:
+                self.from_web = False
+        return feeds
+
+    def economist_graphql_query(self, operation_name, query, variables):
+        cache_key = operation_name + '\n' + json.dumps(variables, sort_keys=True)
+        cached = self.load_cached_payload('editions', cache_key)
+        if cached:
+            payload = json.loads(maybe_decompress(cached).decode('utf-8'))
+            if payload.get('errors'):
+                raise ValueError('GraphQL errors: ' + json.dumps(payload['errors']))
+            return payload.get('data') or {}
+        if self.cache_only():
+            raise ValueError('Edition cache not found for ' + operation_name)
+        query_params = {
+            'operationName': operation_name,
+            'variables': json.dumps(variables, separators=(',', ':')),
+            'query': query,
+        }
+        url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(
+            query_params, safe='()!', quote_via=quote
+        )
+        raw = get_content(url)
+        self.save_cached_payload('editions', cache_key, raw)
+        payload = json.loads(maybe_decompress(raw).decode('utf-8'))
+        if payload.get('errors'):
+            raise ValueError('GraphQL errors: ' + json.dumps(payload['errors']))
+        return payload.get('data') or {}
+
+    def get_edition_index(self, edition_date=None):
+        try:
+            if edition_date:
+                data = self.economist_graphql_query(
+                    'FindEditionByDate',
+                    (
+                        'query FindEditionByDate($issueDate: Date!, $editionType: EditionType!) { '
+                        'findEditionByDate(issueDate: $issueDate, editionType: $editionType) { '
+                        'headline issueDate cover { url } sections { name articles { headline url rubric flyTitle } } '
+                        '} }'
+                    ),
+                    {'issueDate': edition_date, 'editionType': 'WEEKLY'},
+                ).get('findEditionByDate')
+            else:
+                data = self.economist_graphql_query(
+                    'FindLatestEdition',
+                    (
+                        'query FindLatestEdition($editionType: [EditionType!]) { '
+                        'findLatestEdition(editionType: $editionType) { '
+                        'headline issueDate cover { url } sections { name articles { headline url rubric flyTitle } } '
+                        '} }'
+                    ),
+                    {'editionType': ['WEEKLY']},
+                ).get('findLatestEdition')
+        except Exception as e:
+            self.log('Failed to fetch edition index from GraphQL:', str(e))
+            return []
+
+        if not data:
+            return []
+
+        issue_date = (data.get('issueDate') or '').split('T')[0]
+        self.description = data.get('headline') or self.description
+        if issue_date:
+            self.timefmt = ' [' + issue_date + ']'
+
+        cover_url = safe_dict(data, 'cover', 'url') or ''
+        if (
+            cover_url
+            and not env_flag('ECONOMIST_SKIP_IMAGES')
+            and not env_flag('ECONOMIST_SKIP_RECIPE_COVER')
+        ):
+            local_cover = self.local_image_src(cover_url)
+            if local_cover != cover_url:
+                self.cover_url = local_cover
+            else:
+                self.cover_url = (
+                    cover_url.replace(
+                        'economist.com/',
+                        'economist.com/cdn-cgi/image/width=960,quality=80,format=auto/',
+                    )
+                    .replace('SQ_', '')
+                    .replace('_AS', '_AP')
+                )
+            self.log('Got cover:', self.cover_url)
+
+        feeds = []
+        for part in data.get('sections') or ():
+            section = safe_dict(part, 'name') or ''
+            if not section:
+                continue
+            self.log(section)
+
+            articles = []
+            for ar in part.get('articles') or ():
+                title = safe_dict(ar, 'headline') or ''
+                article_url = process_url(safe_dict(ar, 'url') or '')
+                if not title or not article_url:
+                    continue
+                desc = safe_dict(ar, 'rubric') or ''
+                sub = safe_dict(ar, 'flyTitle') or ''
+                if sub and section != sub:
+                    desc = sub + ' :: ' + desc if desc else sub
+                self.log('\t', title, '\n\t', desc, '\n\t\t', article_url)
+                articles.append({'title': title, 'url': article_url, 'description': desc})
+
+            if articles:
+                feeds.append((section, articles))
+
+        d = self.recipe_specific_options.get('de')
+        if d and isinstance(d, str):
+            if d.lower().strip() == 'yes':
+                self.from_web = True
+            else:
+                self.from_web = False
+        return feeds
+
+    def preprocess_html(self, soup):
+        if env_flag('ECONOMIST_SKIP_IMAGES'):
+            for img in soup.findAll('img'):
+                img.extract()
+            return soup
+=======
         soup = self.index_to_soup(url)
         ans = self.economist_parse_index(soup)
         return self.economist_return_index(ans)
@@ -350,6 +970,7 @@ class Economist(BasicNewsRecipe):
         return []
 
     def preprocess_html(self, soup):
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
         width = '600'
         w = self.recipe_specific_options.get('res')
         if w and isinstance(w, str):
@@ -370,9 +991,15 @@ class Economist(BasicNewsRecipe):
                         '</em></article></body></html>')
             root_ = parse(raw)
             script = root_.xpath('//script[@id="__NEXT_DATA__"]')
+<<<<<<< HEAD
+            html = load_article_from_json(script[0].text, translator=self.get_translator())
+        else:
+            html = load_article_from_json(raw, translator=self.get_translator())
+=======
             html = load_article_from_json(script[0].text)
         else:
             html = load_article_from_json(raw)
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
         root = parse(html)
 
         for x in root.xpath(
@@ -400,6 +1027,74 @@ class Economist(BasicNewsRecipe):
         raw = etree.tostring(root, encoding='unicode')
         return raw
 
+<<<<<<< HEAD
+    def get_translator(self):
+        if self._translator is None:
+            self._translator = BilingualTranslator()
+            self._translator.owner = self
+        return self._translator
+
+    def content_cache_dir(self):
+        base = os.environ.get(
+            'ECONOMIST_CONTENT_CACHE_DIR',
+            os.path.join(os.getcwd(), 'economist_content_cache'),
+        )
+        return ensure_dir(base)
+
+    def cache_only(self):
+        return env_flag('ECONOMIST_CACHE_ONLY')
+
+    def cache_path(self, group, key):
+        filename = hashlib.sha256(key.encode('utf-8')).hexdigest() + '.json'
+        return os.path.join(ensure_dir(os.path.join(self.content_cache_dir(), group)), filename)
+
+    def image_cache_path(self, url):
+        return os.path.join(
+            ensure_dir(os.path.join(self.content_cache_dir(), 'images')),
+            cache_filename_from_url(url),
+        )
+
+    def local_image_src(self, url):
+        path = self.image_cache_path(url)
+        if os.path.exists(path):
+            return 'file://' + path
+        return url
+
+    def load_cached_payload(self, group, key):
+        path = self.cache_path(group, key)
+        try:
+            with open(path, 'rb') as fh:
+                return fh.read()
+        except Exception:
+            return b''
+
+    def save_cached_payload(self, group, key, payload):
+        if isinstance(payload, str):
+            payload = payload.encode('utf-8')
+        path = self.cache_path(group, key)
+        with open(path, 'wb') as fh:
+            fh.write(payload)
+        return payload
+
+    def get_article(self, url):
+        cached = self.load_cached_payload('articles', url)
+        if cached:
+            return maybe_decompress(cached)
+        if self.cache_only():
+            raise ValueError('Article cache not found for ' + url)
+        query = {
+            'operationName': 'ArticleDeeplinkQuery',
+            'variables': '{{"ref":"{}"}}'.format(url),
+            'query': 'query ArticleDeeplinkQuery($ref: String!, $includeRelatedArticles: Boolean = true ) { findArticleByUrl(url: $ref) { __typename ...ArticleDataFragment } }  fragment ContentIdentityFragment on ContentIdentity { articleType forceAppWebView leadMediaType }  fragment NarrationFragment on Narration { album bitrate duration filename id provider url isAiGenerated fileHash }  fragment ImageTeaserFragment on ImageComponent { altText height imageType source url width }  fragment PodcastAudioFragment on PodcastEpisode { id audio { url durationInSeconds } }  fragment ArticleTeaserFragment on Article { id tegId url rubric headline flyTitle brand byline dateFirstPublished dateline dateModified datePublished dateRevised estimatedReadTime wordCount printHeadline contentIdentity { __typename ...ContentIdentityFragment } section { tegId name } teaserImage { __typename type ...ImageTeaserFragment } leadComponent { __typename type ...ImageTeaserFragment } narration(selectionMethod: PREFER_ACTOR_NARRATION) { __typename ...NarrationFragment } podcast { __typename ...PodcastAudioFragment } }  fragment AnnotatedTextFragment on AnnotatedText { text textJson annotations { type length index attributes { name value } } }  fragment ImageComponentFragment on ImageComponent { altText caption { __typename ...AnnotatedTextFragment } credit height imageType mode source url width }  fragment BlockQuoteComponentFragment on BlockQuoteComponent { text textJson annotations { type length index attributes { name value } } }  fragment BookInfoComponentFragment on BookInfoComponent { text textJson annotations { type length index attributes { name value } } }  fragment ParagraphComponentFragment on ParagraphComponent { text textJson annotations { type length index attributes { name value } } }  fragment PullQuoteComponentFragment on PullQuoteComponent { text textJson annotations { type length index attributes { name value } } }  fragment CrossheadComponentFragment on CrossheadComponent { text }  fragment OrderedListComponentFragment on OrderedListComponent { items { __typename ...AnnotatedTextFragment } }  fragment UnorderedListComponentFragment on UnorderedListComponent { items { __typename ...AnnotatedTextFragment } }  fragment VideoComponentFragment on VideoComponent { url title thumbnailImage }  fragment InfoboxComponentFragment on InfoboxComponent { components { __typename type ...BlockQuoteComponentFragment ...BookInfoComponentFragment ...ParagraphComponentFragment ...PullQuoteComponentFragment ...CrossheadComponentFragment ...OrderedListComponentFragment ...UnorderedListComponentFragment ...VideoComponentFragment } }  fragment InfographicComponentFragment on InfographicComponent { url title width fallback { __typename ...ImageComponentFragment } altText height width }  fragment ArticleDataFragment on Article { id url brand byline rubric headline layout { headerStyle } contentIdentity { __typename ...ContentIdentityFragment } dateline dateFirstPublished dateModified datePublished dateRevised estimatedReadTime narration(selectionMethod: PREFER_ACTOR_NARRATION) { __typename ...NarrationFragment } printFlyTitle printHeadline printRubric flyTitle wordCount section { tegId name articles(pagingInfo: { pagingType: OFFSET pageSize: 6 pageNumber: 1 } ) @include(if: $includeRelatedArticles) { edges { node { __typename ...ArticleTeaserFragment } } } } teaserImage { __typename type ...ImageComponentFragment } tegId leadComponent { __typename type ...ImageComponentFragment } body { __typename type ...BlockQuoteComponentFragment ...BookInfoComponentFragment ...ParagraphComponentFragment ...PullQuoteComponentFragment ...CrossheadComponentFragment ...OrderedListComponentFragment ...UnorderedListComponentFragment ...InfoboxComponentFragment ...ImageComponentFragment ...VideoComponentFragment ...InfographicComponentFragment } footer { __typename type ...ParagraphComponentFragment } tags { name } ads { adData } podcast { __typename ...PodcastAudioFragment } }',  # noqa: E501
+        }
+        deep_url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(
+            query, safe='()!', quote_via=quote
+        )
+        raw = get_content(deep_url)
+        self.save_cached_payload('articles', url, raw)
+        return maybe_decompress(raw)
+
+=======
     def get_article(self, url):
         query = {
             'operationName': 'ArticleDeeplinkQuery',
@@ -412,6 +1107,7 @@ class Economist(BasicNewsRecipe):
         raw = get_content(deep_url)
         return raw
 
+>>>>>>> 820cd7804ac073988acb797e765fb3ae53cc4ca5
     def print_version(self, url):
         if self.from_web:
             return url

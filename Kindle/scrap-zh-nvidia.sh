@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+if [ -z "$NVIDIA_API_KEY" ] && [ -z "$ECONOMIST_TRANSLATE_API_KEY" ]; then
+    echo "Set NVIDIA_API_KEY (or ECONOMIST_TRANSLATE_API_KEY) before running this script." >&2
+    exit 1
+fi
+
+export ECONOMIST_TRANSLATE_ZH=1
+export ECONOMIST_TRANSLATE_PROVIDER=nvidia
+export ECONOMIST_TRANSLATE_MODEL="${ECONOMIST_TRANSLATE_MODEL:-nvidia/riva-translate-4b-instruct-v1.1}"
+export ECONOMIST_TRANSLATE_SOURCE_LANGUAGE="${ECONOMIST_TRANSLATE_SOURCE_LANGUAGE:-English}"
+export ECONOMIST_TRANSLATE_TARGET_LANGUAGE="${ECONOMIST_TRANSLATE_TARGET_LANGUAGE:-Simplified Chinese}"
+
+./scrap.sh "$1" "$2"

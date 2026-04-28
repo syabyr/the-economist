@@ -1,12 +1,18 @@
 #!/bin/bash
-year=$(echo "$1" | cut -d "-" -f 1)
-mkdir -p "$year"
-if [ ! -f "TheEconomist-$1-$2.mobi" ];then
+set -e
 
-        sed  "s/edition_date = .*/edition_date = '$1'/" economist.recipe > "TheEconomist-$1-$2.recipe"
+issue_date="$1"
+issue_id="$2"
 
-        ebook-convert "TheEconomist-$1-$2.recipe" .mobi --output-profile=kindle_oasis --pubdate="$1" -vv --mobi-file-type=new --authors="TheEconomist" --title="TheEconomist-$1-$2"
-
-        rm "TheEconomist-$1-$2.recipe"
-        mv "TheEconomist-$1-$2.mobi" "$year"
+if [ -z "$issue_date" ] || [ -z "$issue_id" ]; then
+    echo "Usage: ./scrap.sh YYYY-MM-DD ISSUE_ID" >&2
+    exit 1
 fi
+
+./download-issue.sh "$issue_date" "$issue_id"
+
+if [ "${ECONOMIST_TRANSLATE_ZH:-0}" = "1" ]; then
+    ./translate-zh-nvidia.sh "$issue_date" "$issue_id"
+fi
+
+./build-issue.sh "$issue_date" "$issue_id"

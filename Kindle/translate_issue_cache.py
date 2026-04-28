@@ -5,7 +5,9 @@ import json
 import os
 import re
 import sys
+import time
 from html import unescape
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -78,6 +80,8 @@ class Translator:
         self.api_key = self.get_api_key()
         self.model = os.environ.get('ECONOMIST_TRANSLATE_MODEL', self.default_model())
         self.timeout = int(os.environ.get('ECONOMIST_TRANSLATE_TIMEOUT', '120'))
+        self.retries = int(os.environ.get('ECONOMIST_TRANSLATE_RETRIES', '8'))
+        self.retry_delay = float(os.environ.get('ECONOMIST_TRANSLATE_RETRY_DELAY', '2'))
         self.cache_path = os.environ['ECONOMIST_TRANSLATE_CACHE']
         self.cache = self.load_cache()
 
@@ -161,12 +165,36 @@ class Translator:
                 'Content-Type': 'application/json',
             },
         )
-        with urlopen(req, timeout=self.timeout) as resp:
-            raw = json.loads(resp.read().decode('utf-8'))
+        raw = self.request_translation(req)
         translated = raw['choices'][0]['message']['content'].strip()
         self.cache[cache_key] = translated
         self.save_cache()
         return translated
+
+    def request_translation(self, req):
+        attempts = max(1, self.retries)
+        for attempt in range(1, attempts + 1):
+            try:
+                with urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
+            except HTTPError as exc:
+                if exc.code < 500 and exc.code != 429:
+                    raise
+                last_error = exc
+            except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+
+            if attempt == attempts:
+                raise last_error
+
+            delay = self.retry_delay * attempt
+            print(
+                f'Translation request failed on attempt {attempt}/{attempts}: '
+                f'{last_error}; retrying in {delay:g}s',
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
 
 
 def collect_fragments(node, out):

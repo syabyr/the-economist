@@ -11,7 +11,7 @@ if [ -z "$issue_date" ] || [ -z "$issue_id" ]; then
 fi
 
 cache_dir="$(pwd)/economist_content_cache/$issue_date-$issue_id"
-translate_cache="$(pwd)/economist_translate_cache/$issue_date-$issue_id.json"
+translate_cache="$cache_dir/translate.json"
 recipe_file="TheEconomist-$issue_date-$issue_id.recipe"
 cover_path="$(python3 - "$cache_dir" <<'PY'
 import glob

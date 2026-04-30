@@ -111,7 +111,13 @@ class BilingualTranslator:
         self.retry_delay = env_float('ECONOMIST_TRANSLATE_RETRY_DELAY', 2)
         self.cache_path = os.environ.get(
             'ECONOMIST_TRANSLATE_CACHE',
-            os.path.join(os.getcwd(), 'economist_translate_cache.json'),
+            os.path.join(
+                os.environ.get(
+                    'ECONOMIST_CONTENT_CACHE_DIR',
+                    os.path.join(os.getcwd(), 'economist_content_cache'),
+                ),
+                'translate.json',
+            ),
         )
         self.cache = self.load_cache()
 

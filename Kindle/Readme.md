@@ -33,7 +33,7 @@ export NVIDIA_API_KEY=your_nvidia_key
 This stores:
 
 - raw issue/article payloads under `economist_content_cache/<date>-<issue>/`
-- translation cache under `economist_translate_cache/<date>-<issue>.json`
+- translation cache under `economist_content_cache/<date>-<issue>/translate.json`
 - `.mobi` under `<year>/`
 - `.pdf` under `pdf/<year>/`
 
@@ -54,7 +54,7 @@ Optional variables:
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export ECONOMIST_TRANSLATE_BASE_URL=https://your-openai-compatible-endpoint/v1
 export ECONOMIST_TRANSLATE_TIMEOUT=120
-export ECONOMIST_TRANSLATE_CACHE=economist_translate_cache.json
+export ECONOMIST_TRANSLATE_CACHE=economist_content_cache/2026-04-25-9496/translate.json
 export ECONOMIST_TRANSLATE_PROVIDER=nvidia
 export NVIDIA_API_KEY=your_nvidia_key
 export ECONOMIST_TRANSLATE_MODEL=nvidia/riva-translate-4b-instruct-v1.1

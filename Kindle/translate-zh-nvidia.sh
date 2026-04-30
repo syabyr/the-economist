@@ -15,7 +15,7 @@ if [ -z "$NVIDIA_API_KEY" ] && [ -z "$ECONOMIST_TRANSLATE_API_KEY" ]; then
 fi
 
 cache_dir="$(pwd)/economist_content_cache/$issue_date-$issue_id"
-translate_cache="$(pwd)/economist_translate_cache/$issue_date-$issue_id.json"
+translate_cache="$cache_dir/translate.json"
 
 if [ ! -d "$cache_dir" ]; then
     echo "Missing content cache at $cache_dir. Run ./download-issue.sh first." >&2

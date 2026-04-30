@@ -241,6 +241,7 @@ def main():
         print('Missing article cache at ' + article_dir, file=sys.stderr)
         return 1
 
+    os.environ.setdefault('ECONOMIST_TRANSLATE_CACHE', os.path.join(cache_dir, 'translate.json'))
     translator = Translator()
     for name in sorted(os.listdir(article_dir)):
         path = os.path.join(article_dir, name)

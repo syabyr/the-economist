@@ -283,6 +283,204 @@ def parse_next_data(html):
     return json.loads(unescape(match.group(1)))
 
 
+def normalize_text_key(value):
+    return re.sub(r'[^a-z0-9]+', '', (value or '').lower())
+
+
+def keys_match(left, right):
+    a = normalize_text_key(left)
+    b = normalize_text_key(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a.replace('and', '') == b.replace('and', '')
+
+
+def canonical_article_url(url):
+    if not url:
+        return ''
+    if url.startswith('/'):
+        url = 'https://www.economist.com' + url
+    if url.endswith('/print'):
+        url = url.rpartition('/')[0]
+    return url
+
+
+def audio_m3u_candidates(issue_date):
+    compact = issue_date.replace('-', '')
+    candidates = []
+
+    explicit = os.environ.get('ECONOMIST_AUDIO_ORDER_FILE', '').strip()
+    if explicit:
+        candidates.append(explicit)
+
+    base_dir = os.environ.get('ECONOMIST_AUDIO_BASE_DIR', '').strip()
+    if base_dir:
+        candidates.append(os.path.join(base_dir, compact, compact + '.m3u'))
+
+    cwd = os.getcwd()
+    candidates.extend(
+        [
+            os.path.join(cwd, 'audio', compact, compact + '.m3u'),
+            os.path.join(cwd, '..', 'audio', compact, compact + '.m3u'),
+        ]
+    )
+    return candidates
+
+
+def parse_audio_m3u_order(issue_date):
+    path = ''
+    for candidate in audio_m3u_candidates(issue_date):
+        if candidate and os.path.isfile(candidate):
+            path = candidate
+            break
+    if not path:
+        return []
+
+    sections = []
+    section_map = {}
+    pending_extinf = ''
+    with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith('#EXTINF:'):
+                pending_extinf = line
+                continue
+            if not line.endswith('.mp3'):
+                continue
+
+            name = os.path.basename(line)
+            match = re.match(r'^\d+-(.+?)---(.+)-[0-9a-f]{32}\.mp3$', name)
+            if not match:
+                pending_extinf = ''
+                continue
+
+            section_name = match.group(1).replace('-', ' ').strip()
+            title = match.group(2).replace('-', ' ').replace('_', "'").strip()
+
+            if pending_extinf:
+                try:
+                    info = pending_extinf.split(',', 1)[1]
+                    parts = info.split(' - ')
+                    if len(parts) >= 3:
+                        parsed_section = re.sub(r'^\d+\s+', '', parts[1]).strip()
+                        parsed_title = ' - '.join(parts[2:]).strip()
+                        if parsed_section:
+                            section_name = parsed_section
+                        if parsed_title:
+                            title = parsed_title
+                except Exception:
+                    pass
+            pending_extinf = ''
+
+            section_key = normalize_text_key(section_name)
+            if not section_key:
+                continue
+            section_bucket = section_map.get(section_key)
+            if section_bucket is None:
+                section_bucket = {'name': section_name, 'articles': []}
+                section_map[section_key] = section_bucket
+                sections.append(section_bucket)
+
+            section_bucket['articles'].append({'headline': title})
+
+    if sections:
+        print('Loaded audio m3u ordering from ' + path, flush=True)
+    return sections
+
+
+def fetch_weeklyedition_sections(issue_date):
+    try:
+        html = fetch_html('https://www.economist.com/weeklyedition/' + issue_date)
+        data = parse_next_data(html)
+        content = ((data.get('props') or {}).get('pageProps') or {}).get('content') or {}
+        return (content.get('headerSections') or []) + (content.get('sections') or [])
+    except Exception as exc:
+        print(f'failed weeklyedition order fetch for {issue_date}: {exc}', file=sys.stderr, flush=True)
+        return []
+
+
+def reorder_edition_sections(edition, ordered_sections):
+    if not ordered_sections:
+        return edition
+
+    source_sections = list(edition.get('sections') or ())
+    if not source_sections:
+        return edition
+
+    used_sections = [False] * len(source_sections)
+    result_sections = []
+
+    for ordered in ordered_sections:
+        section_name = (ordered.get('name') or '').strip()
+        section_key = normalize_text_key(section_name)
+        if not section_key:
+            continue
+
+        source_index = None
+        source_section = None
+        for idx, candidate in enumerate(source_sections):
+            if used_sections[idx]:
+                continue
+            candidate_name = (candidate.get('name') or '').strip()
+            if keys_match(candidate_name, section_name):
+                source_index = idx
+                source_section = candidate
+                break
+        if source_section is None:
+            continue
+
+        source_articles = list(source_section.get('articles') or ())
+        used_articles = [False] * len(source_articles)
+        ordered_articles = []
+
+        for ordered_article in ordered.get('articles') or ():
+            ordered_url = canonical_article_url(ordered_article.get('url') or '')
+            ordered_headline = (ordered_article.get('headline') or '').strip()
+            ordered_headline_key = normalize_text_key(ordered_headline)
+            picked_index = None
+
+            if ordered_url:
+                for idx, article in enumerate(source_articles):
+                    if used_articles[idx]:
+                        continue
+                    if canonical_article_url(article.get('url') or '') == ordered_url:
+                        picked_index = idx
+                        break
+
+            if picked_index is None and ordered_headline:
+                for idx, article in enumerate(source_articles):
+                    if used_articles[idx]:
+                        continue
+                    if keys_match((article.get('headline') or '').strip(), ordered_headline):
+                        picked_index = idx
+                        break
+
+            if picked_index is not None:
+                used_articles[picked_index] = True
+                ordered_articles.append(source_articles[picked_index])
+
+        for idx, article in enumerate(source_articles):
+            if not used_articles[idx]:
+                ordered_articles.append(article)
+
+        merged = dict(source_section)
+        merged['articles'] = ordered_articles
+        result_sections.append(merged)
+        used_sections[source_index] = True
+
+    for idx, section in enumerate(source_sections):
+        if not used_sections[idx]:
+            result_sections.append(section)
+
+    merged_edition = dict(edition)
+    merged_edition['sections'] = result_sections
+    return merged_edition
+
+
 def article_url_date(url):
     match = re.search(r'/(20\d\d)/(\d\d)/(\d\d)/', url or '')
     if not match:
@@ -411,6 +609,22 @@ def main():
     if not edition:
         print('No edition found for ' + issue_date, file=sys.stderr)
         return 1
+
+    ordered_sections = parse_audio_m3u_order(issue_date)
+    if not ordered_sections:
+        ordered_sections = fetch_weeklyedition_sections(issue_date)
+    if ordered_sections:
+        edition = reorder_edition_sections(edition, ordered_sections)
+        key = 'FindEditionByDate\n' + json.dumps(
+            {'issueDate': issue_date, 'editionType': 'WEEKLY'}, sort_keys=True
+        )
+        write_cached_payload(
+            cache_dir,
+            'editions',
+            key,
+            json.dumps({'data': {'findEditionByDate': edition}}, separators=(',', ':')),
+        )
+        print('Applied weeklyedition order from web page for', issue_date, flush=True)
 
     urls = []
     audio_items = []

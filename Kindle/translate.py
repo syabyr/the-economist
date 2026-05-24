@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from urllib.error import HTTPError, URLError
@@ -82,18 +83,47 @@ class SqliteTranslator:
         return 'gpt-4.1-mini'
 
     def _system_prompt(self):
+        dropcap_rule = (
+            'If a fragment begins with a decorative drop cap pattern like '
+            '<b>L</b><span ...>argely because</span>, treat it as one phrase. '
+            'Do not keep the Latin initial letter untranslated. Translate the combined '
+            'meaning naturally in Chinese while preserving valid inline HTML structure.'
+        )
         if self.provider == 'nvidia':
             return (
                 f'You are an expert at translating HTML fragments from '
                 f'{self.source_language} to {self.target_language}. '
                 'Preserve all inline HTML tags, links, emphasis, superscripts, '
-                'subscripts, and text order. Return only the translated HTML fragment.'
+                'subscripts, and text order. '
+                + dropcap_rule + ' '
+                'Return only the translated HTML fragment.'
             )
         return (
             f'Translate the provided HTML fragment into {self.target_language}. '
             'Preserve inline HTML tags, links, emphasis, superscripts, subscripts, '
-            'and text order. Return only the translated HTML fragment.'
+            'and text order. '
+            + dropcap_rule + ' '
+            'Return only the translated HTML fragment.'
         )
+
+    @staticmethod
+    def _has_drop_cap_pattern(fragment):
+        return bool(re.match(r'^\s*<b>[A-Za-z]</b>\s*<span\b[^>]*>', fragment or ''))
+
+    @staticmethod
+    def _looks_untranslated_drop_cap(translated):
+        return bool(re.match(r'^\s*<b>[A-Za-z]</b>', translated or ''))
+
+    def _normalize_drop_cap_translation(self, fragment, translated_text):
+        if not self._has_drop_cap_pattern(fragment):
+            return translated_text
+        if not self._looks_untranslated_drop_cap(translated_text):
+            return translated_text
+        # Some models keep the decorative Latin initial; strip it to keep a natural Chinese phrase.
+        return re.sub(r'^\s*<b>[A-Za-z]</b>\s*', '', translated_text or '', count=1)
+
+    def _should_retranslate_drop_cap(self, fragment, translated_text):
+        return self._has_drop_cap_pattern(fragment) and self._looks_untranslated_drop_cap(translated_text)
 
     def _user_prompt(self, fragment):
         if self.provider == 'nvidia':
@@ -114,21 +144,47 @@ class SqliteTranslator:
         hash_id = hashlib.sha256(fragment.encode('utf-8')).hexdigest()
         cached = db.get_translation(self.conn, hash_id, article_key=article_key)
         if cached:
-            self._cache_hits += 1
-            return cached['translated_text']
+            normalized = self._normalize_drop_cap_translation(fragment, cached['translated_text'])
+            if normalized != cached['translated_text']:
+                db.upsert_translation(
+                    self.conn, article_key, hash_id, fragment, normalized,
+                    model=cached.get('model') or self.model,
+                    source_language=cached.get('source_language') or self.source_language,
+                    target_language=cached.get('target_language') or self.target_language,
+                    fragment_type=fragment_type,
+                    fragment_order=fragment_order,
+                )
+                self._cache_hits += 1
+                return normalized
+            if not self._should_retranslate_drop_cap(fragment, cached['translated_text']):
+                self._cache_hits += 1
+                return cached['translated_text']
 
         shared_cached = db.get_translation(self.conn, hash_id)
         if shared_cached:
-            db.upsert_translation(
-                self.conn, article_key, hash_id, fragment, shared_cached['translated_text'],
-                model=shared_cached.get('model') or self.model,
-                source_language=shared_cached.get('source_language') or self.source_language,
-                target_language=shared_cached.get('target_language') or self.target_language,
-                fragment_type=fragment_type,
-                fragment_order=fragment_order,
-            )
-            self._cache_hits += 1
-            return shared_cached['translated_text']
+            normalized = self._normalize_drop_cap_translation(fragment, shared_cached['translated_text'])
+            if normalized != shared_cached['translated_text']:
+                db.upsert_translation(
+                    self.conn, article_key, hash_id, fragment, normalized,
+                    model=shared_cached.get('model') or self.model,
+                    source_language=shared_cached.get('source_language') or self.source_language,
+                    target_language=shared_cached.get('target_language') or self.target_language,
+                    fragment_type=fragment_type,
+                    fragment_order=fragment_order,
+                )
+                self._cache_hits += 1
+                return normalized
+            if not self._should_retranslate_drop_cap(fragment, shared_cached['translated_text']):
+                db.upsert_translation(
+                    self.conn, article_key, hash_id, fragment, shared_cached['translated_text'],
+                    model=shared_cached.get('model') or self.model,
+                    source_language=shared_cached.get('source_language') or self.source_language,
+                    target_language=shared_cached.get('target_language') or self.target_language,
+                    fragment_type=fragment_type,
+                    fragment_order=fragment_order,
+                )
+                self._cache_hits += 1
+                return shared_cached['translated_text']
 
         if not self.api_key:
             raise RuntimeError(
@@ -138,7 +194,7 @@ class SqliteTranslator:
         if utils.env_flag('ECONOMIST_CACHE_ONLY'):
             return ''
 
-        translated = self._call_api(fragment)
+        translated = self._normalize_drop_cap_translation(fragment, self._call_api(fragment))
         db.upsert_translation(
             self.conn, article_key, hash_id, fragment, translated,
             model=self.model,

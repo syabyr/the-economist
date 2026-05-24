@@ -143,17 +143,27 @@ class BilingualTranslator:
         return 'gpt-4.1-mini'
 
     def system_prompt(self):
+        dropcap_rule = (
+            'If a fragment begins with a decorative drop cap pattern like '
+            '<b>L</b><span ...>argely because</span>, treat it as one phrase. '
+            'Do not keep the Latin initial letter untranslated. Translate the combined '
+            'meaning naturally in Chinese while preserving valid inline HTML structure.'
+        )
         if self.provider == 'nvidia':
             return (
                 f'You are an expert at translating HTML fragments from '
                 f'{self.source_language} to {self.target_language}. '
                 'Preserve all inline HTML tags, links, emphasis, superscripts, '
-                'subscripts, and text order. Return only the translated HTML fragment.'
+                'subscripts, and text order. '
+                + dropcap_rule + ' '
+                'Return only the translated HTML fragment.'
             )
         return (
             f'Translate the provided HTML fragment into {self.target_language}. '
             'Preserve inline HTML tags, links, emphasis, superscripts, subscripts, '
-            'and text order. Return only the translated HTML fragment.'
+            'and text order. '
+            + dropcap_rule + ' '
+            'Return only the translated HTML fragment.'
         )
 
     def user_prompt(self, fragment):
@@ -163,6 +173,22 @@ class BilingualTranslator:
                 f'fragment from {self.source_language}?\n\n{fragment}'
             )
         return fragment
+
+    @staticmethod
+    def has_drop_cap_pattern(fragment):
+        return bool(re.match(r'^\s*<b>[A-Za-z]</b>\s*<span\b[^>]*>', fragment or ''))
+
+    @staticmethod
+    def looks_untranslated_drop_cap(translated):
+        return bool(re.match(r'^\s*<b>[A-Za-z]</b>', translated or ''))
+
+    def normalize_drop_cap_translation(self, fragment, translated):
+        if not self.has_drop_cap_pattern(fragment):
+            return translated
+        if not self.looks_untranslated_drop_cap(translated):
+            return translated
+        # Keep drop-cap semantics in Chinese by removing decorative Latin initial.
+        return re.sub(r'^\s*<b>[A-Za-z]</b>\s*', '', translated or '', count=1)
 
     def load_cache(self):
         if not self.enabled:
@@ -190,7 +216,11 @@ class BilingualTranslator:
             (self.model + '\n' + fragment).encode('utf-8')
         ).hexdigest()
         if cache_key in self.cache:
-            return self.cache[cache_key]
+            normalized = self.normalize_drop_cap_translation(fragment, self.cache[cache_key])
+            if normalized != self.cache[cache_key]:
+                self.cache[cache_key] = normalized
+                self.save_cache()
+            return normalized
         if not self.api_key:
             raise RuntimeError(
                 'ECONOMIST_TRANSLATE_ZH is enabled but no translation API key is set.'
@@ -216,7 +246,10 @@ class BilingualTranslator:
             },
         )
         raw = self.request_translation(req)
-        translated = raw['choices'][0]['message']['content'].strip()
+        translated = self.normalize_drop_cap_translation(
+            fragment,
+            raw['choices'][0]['message']['content'].strip(),
+        )
         self.cache[cache_key] = translated
         self.save_cache()
         return translated

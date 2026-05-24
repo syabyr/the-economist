@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ edition.headline or issue_date }} — The Economist</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="ec-masthead">
+  <div class="ec-masthead-inner">
+    <a href="/weeklyedition" class="ec-logo">
+      <svg class="ec-logo-svg" viewBox="0 0 190 22" width="190" height="22" aria-label="The Economist">
+        <rect width="190" height="22" fill="#E3120B"/>
+        <text x="95" y="15" text-anchor="middle" fill="white" font-family="Georgia,serif" font-size="14" font-weight="bold">The Economist</text>
+      </svg>
+    </a>
+    <nav class="ec-masthead-nav">
+      <a href="/weeklyedition/archive">Weekly editions</a>
+    </nav>
+  </div>
+</header>
+
+<main class="ec-page">
+  <div class="ec-edition-header-grid">
+    <div class="ec-edition-header-main">
+      <time class="ec-edition-date">{{ display_date }}</time>
+      <h1 class="ec-edition-title">{{ edition.headline or issue_date }}</h1>
+      {% if header_section %}
+      <div class="ec-header-section">
+        <div class="ec-header-section-header">
+          <hr class="ec-section-rule">
+          <h2 class="ec-section-title">{{ header_section.name }}</h2>
+        </div>
+        <div class="ec-header-links">
+          {% for art in header_section.articles %}
+          <a href="{{ art.path }}" class="ec-header-link">{{ art.headline or "(untitled)" }}</a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if cover_url %}
+    <div class="ec-edition-cover">
+      <img src="{{ cover_url }}" alt="Edition cover" class="ec-cover-img">
+    </div>
+    {% endif %}
+  </div>
+
+  {% for section in sections %}
+  <section class="ec-section">
+    <div class="ec-section-header">
+      <hr class="ec-section-rule">
+      <h2 class="ec-section-title">{{ section.name }}</h2>
+    </div>
+
+    <div class="ec-section-grid ec-layout-{{ section.layout }}{% if section.articles|length == 1 %} ec-section-grid-single{% endif %}">
+      {% for art in section.articles %}
+      {% set section_name = (section.name or '') %}
+      {% set show_image = false %}
+      {% if section_name == 'Leaders' %}
+        {% set show_image = art.image_url %}
+      {% elif section_name == 'Letters' or section_name == 'Economic & financial indicators' %}
+        {% set show_image = false %}
+      {% elif loop.first %}
+        {% set show_image = art.image_url %}
+      {% endif %}
+      <article class="ec-story">
+        {% if show_image %}
+        <a href="{{ art.path }}" class="ec-story-image-link">
+          <img src="{{ art.image_url }}" alt="{{ art.headline or '' }}" class="ec-story-image ec-story-image-thumb">
+        </a>
+        {% endif %}
+        <div class="ec-story-body">
+          {% if art.fly_title %}<p class="ec-story-fly">{{ art.fly_title }}</p>{% endif %}
+          <h3 class="ec-story-headline"><a href="{{ art.path }}">{{ art.headline or "(untitled)" }}</a></h3>
+          {% if art.rubric %}<p class="ec-story-rubric">{{ art.rubric }}</p>{% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</main>
+
+<footer class="ec-footer">
+  <div class="ec-footer-inner">
+    <p>The Economist &middot; Generated from SQLite cache</p>
+  </div>
+</footer>
+
+</body>
+</html>

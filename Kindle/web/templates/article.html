@@ -24,8 +24,8 @@
   </div>
 </header>
 
-<main class="page-content">
-  <article>
+<main class="ec-page article-page">
+  <article class="ec-article">
     <!-- Section label -->
     {% if article.section_name %}
     <p class="article-rubric">
@@ -35,8 +35,9 @@
 
     <h1 class="article-headline">{{ article.headline or "(untitled)" }}</h1>
 
+    {% if article.fly_title %}<p class="article-fly-title">{{ article.fly_title }}</p>{% endif %}
+
     <div class="article-meta">
-      {% if article.fly_title %}<p class="article-fly-title">{{ article.fly_title }}</p>{% endif %}
       <p class="article-date">
         {{ article.date_published[:10] if article.date_published else "" }}
         {% if article.estimated_read_time %} &middot; ~{{ article.estimated_read_time }} min read{% endif %}
@@ -71,11 +72,11 @@
       </div>
       {% elif f.type == 'crosshead' %}
       <div class="fragment crosshead">
-        <h4>{{ f.en | safe }}</h4>
-        {% if f.zh %}<h4 class="zh">{{ f.zh | safe }}</h4>{% endif %}
+        <h2 class="crosshead-en">{{ f.en | safe }}</h2>
+        {% if f.zh %}<h3 class="crosshead-zh">{{ f.zh | safe }}</h3>{% endif %}
       </div>
       {% elif f.type == 'list' %}
-      <div class="fragment">
+      <div class="fragment fragment-list">
         <div class="en">
           <{{ f.list_tag or 'ul' }}>
           {% for item in f.items %}<li>{{ item.en | safe }}</li>{% endfor %}
@@ -88,17 +89,17 @@
         </div>
       </div>
       {% elif f.type in ('heading', 'fly_title', 'rubric') %}
-      <div class="fragment">
+      <div class="fragment fragment-heading">
         <div class="en"><b>{{ f.en | safe }}</b></div>
         {% if f.zh %}<div class="zh"><b>{{ f.zh | safe }}</b></div>{% endif %}
       </div>
       {% elif f.type in ('pull_quote', 'block_quote') %}
-      <div class="fragment">
+      <div class="fragment fragment-quote">
         <div class="en"><i>{{ f.en | safe }}</i></div>
         {% if f.zh %}<div class="zh"><i>{{ f.zh | safe }}</i></div>{% endif %}
       </div>
       {% else %}
-      <div class="fragment">
+      <div class="fragment fragment-paragraph">
         <div class="en">{{ f.en | safe }}</div>
         {% if f.zh %}<div class="zh">{{ f.zh | safe }}</div>{% endif %}
       </div>

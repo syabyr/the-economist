@@ -144,6 +144,17 @@ class SqliteTranslator:
         hash_id = hashlib.sha256(fragment.encode('utf-8')).hexdigest()
         cached = db.get_translation(self.conn, hash_id, article_key=article_key)
         if cached:
+            # If this translation belongs to a different article_key,
+            # copy it to the current article_key so build_issue.py can find it.
+            if cached['article_key'] != article_key:
+                db.upsert_translation(
+                    self.conn, article_key, hash_id, fragment, cached['translated_text'],
+                    model=cached.get('model') or self.model,
+                    source_language=cached.get('source_language') or self.source_language,
+                    target_language=cached.get('target_language') or self.target_language,
+                    fragment_type=fragment_type,
+                    fragment_order=fragment_order,
+                )
             normalized = self._normalize_drop_cap_translation(fragment, cached['translated_text'])
             if normalized != cached['translated_text']:
                 db.upsert_translation(

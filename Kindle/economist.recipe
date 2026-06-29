@@ -222,9 +222,8 @@ class BilingualTranslator:
                 self.save_cache()
             return normalized
         if not self.api_key:
-            raise RuntimeError(
-                'ECONOMIST_TRANSLATE_ZH is enabled but no translation API key is set.'
-            )
+            # Cache-only mode: skip uncached fragments instead of crashing
+            return ''
 
         payload = {
             'model': self.model,
@@ -306,7 +305,8 @@ def render_bilingual_block(tag, content_html, translator=None, style='', class_n
         class_name='translated-cn' if not class_name else class_name + ' translated-cn',
         style=style,
     )
-    return original + f'<{tag}{cn_attrs}>{translated}</{tag}>'
+    result = original + f'<{tag}{cn_attrs}>{translated}</{tag}>'
+    return result
 
 
 def process_web_list(li_node, translator=None):

@@ -145,7 +145,7 @@ def canonical_article_url(url):
 
 # ── HTTP fetch ──────────────────────────────────────────────────────────────
 
-def fetch(url, extra_headers=None):
+def fetch(url, extra_headers=None, timeout=120):
     """HTTP GET with retry/backoff. Returns raw bytes."""
     headers = dict(HEADERS)
     if extra_headers:
@@ -160,7 +160,7 @@ def fetch(url, extra_headers=None):
 
     for attempt in range(1, attempts + 1):
         try:
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 return resp.read()
         except HTTPError as exc:
             last_exc = exc

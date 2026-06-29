@@ -101,19 +101,32 @@ TOPIC_FALLBACKS = [
 # ── GraphQL fetch (adapted from prefetch_issue.py) ──────────────────────────
 
 def fetch_graphql(operation_name, query, variables):
-    params = {
-        'operationName': operation_name,
-        'variables': json.dumps(variables, separators=(',', ':')),
-        'query': query,
-    }
-    url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(
-        params, safe='()!', quote_via=quote
-    )
-    raw = utils.fetch(url)
-    try:
-        return json.loads(raw.decode('utf-8'))
-    except UnicodeDecodeError:
-        return json.loads(gzip.decompress(raw).decode('utf-8'))
+    # Try internal gateway first
+    endpoints = [
+        'https://cp2-graphql-gateway.p.aws.economist.com/graphql',
+        'https://www.economist.com/api/graphql'  # Public fallback endpoint
+    ]
+
+    last_exc = None
+    for endpoint in endpoints:
+        params = {
+            'operationName': operation_name,
+            'variables': json.dumps(variables, separators=(',', ':')),
+            'query': query,
+        }
+        url = endpoint + '?' + urlencode(params, safe='()!', quote_via=quote)
+        try:
+            raw = utils.fetch(url, timeout=10)  # Short timeout for GraphQL API
+            try:
+                return json.loads(raw.decode('utf-8'))
+            except UnicodeDecodeError:
+                return json.loads(gzip.decompress(raw).decode('utf-8'))
+        except Exception as exc:
+            last_exc = exc
+            print(f'  GraphQL endpoint {endpoint} failed: {exc}', file=sys.stderr, flush=True)
+
+    # If both endpoints fail, re-raise the last exception
+    raise last_exc
 
 
 def fetch_article_json(url):
@@ -125,9 +138,52 @@ def fetch_article_json(url):
     deep_url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(
         params, safe='()!', quote_via=quote
     )
-    raw = utils.fetch(deep_url)
+    raw = utils.fetch(deep_url, timeout=10)  # Short timeout for GraphQL API
     payload = utils.maybe_decompress(raw)
     return json.loads(payload.decode('utf-8'))
+
+
+def fetch_article_html_fallback(url):
+    """Fetch article content from public HTML page as fallback when GraphQL is down."""
+    try:
+        html = utils.fetch_html(url)
+        data = utils.parse_next_data(html)
+        page_props = (data.get('props') or {}).get('pageProps') or {}
+        content = page_props.get('content') or {}
+
+        if not content or not content.get('body'):
+            return None
+
+        # Map HTML page data structure to match GraphQL response structure
+        return {
+            'id': content.get('id'),
+            'url': url,
+            'brand': content.get('brand'),
+            'byline': content.get('byline'),
+            'rubric': content.get('rubric'),
+            'headline': content.get('headline'),
+            'flyTitle': content.get('flyTitle') or content.get('flyTitleToDisplay'),
+            'dateFirstPublished': content.get('dateFirstPublished'),
+            'datePublished': content.get('datePublished') or content.get('dateFirstPublished'),
+            'dateModified': content.get('dateModified'),
+            'dateRevised': content.get('dateRevised'),
+            'estimatedReadTime': content.get('estimatedReadTime'),
+            'wordCount': content.get('wordCount'),
+            'printHeadline': content.get('printHeadline'),
+            'printRubric': content.get('printRubric'),
+            'section': content.get('section') or {},
+            'teaserImage': content.get('teaserImage') or {},
+            'leadComponent': content.get('leadComponent') or {},
+            'body': content.get('body') or [],
+            'footer': content.get('footer') or [],
+            'tags': content.get('tags') or [],
+            'narration': content.get('narration') or {},
+            'podcast': content.get('podcast') or {},
+            'contentIdentity': content.get('contentIdentity') or {},
+        }
+    except Exception as exc:
+        print(f'  HTML fallback failed: {exc}', file=sys.stderr, flush=True)
+        return None
 
 
 # ── Section ordering ────────────────────────────────────────────────────────
@@ -399,9 +455,14 @@ def main():
 
     # ── 1. Fetch edition manifest ───────────────────────────────────────
     print(f'Fetching edition {issue_date} (id={issue_id})...', flush=True)
-    payload = fetch_graphql('FindEditionByDate', EDITION_QUERY,
-                            {'issueDate': issue_date, 'editionType': 'WEEKLY'})
-    edition = ((payload.get('data') or {}).get('findEditionByDate') or {})
+    edition = {}
+    try:
+        payload = fetch_graphql('FindEditionByDate', EDITION_QUERY,
+                                {'issueDate': issue_date, 'editionType': 'WEEKLY'})
+        edition = ((payload.get('data') or {}).get('findEditionByDate') or {})
+    except Exception as exc:
+        print(f'Failed to fetch edition from GraphQL gateway: {exc}', file=sys.stderr, flush=True)
+
     if not edition:
         edition = build_topic_fallback_edition(issue_date)
     if not edition:
@@ -461,13 +522,14 @@ def main():
                 print(f'  (cached, skipping fetch)', flush=True)
                 continue
 
+            article_data = None
             try:
                 payload = fetch_article_json(url)
+                article_data = ((payload.get('data') or {}).get('findArticleByUrl') or {})
             except Exception as exc:
-                print(f'  ERROR fetching article: {exc}', file=sys.stderr, flush=True)
-                continue
+                print(f'  GraphQL fetch failed, trying HTML fallback: {exc}', file=sys.stderr, flush=True)
+                article_data = fetch_article_html_fallback(url)
 
-            article_data = ((payload.get('data') or {}).get('findArticleByUrl') or {})
             if not article_data:
                 print(f'  WARNING: empty article data for {url}', flush=True)
                 continue

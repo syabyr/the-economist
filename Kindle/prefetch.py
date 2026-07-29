@@ -98,49 +98,92 @@ TOPIC_FALLBACKS = [
     ('Obituary', 'https://www.economist.com/topics/obituary', 'obituary'),
 ]
 
-# ── GraphQL fetch (adapted from prefetch_issue.py) ──────────────────────────
-
-def fetch_graphql(operation_name, query, variables):
-    # Try internal gateway first
-    endpoints = [
-        'https://cp2-graphql-gateway.p.aws.economist.com/graphql',
-        'https://www.economist.com/api/graphql'  # Public fallback endpoint
-    ]
-
-    last_exc = None
-    for endpoint in endpoints:
-        params = {
-            'operationName': operation_name,
-            'variables': json.dumps(variables, separators=(',', ':')),
-            'query': query,
-        }
-        url = endpoint + '?' + urlencode(params, safe='()!', quote_via=quote)
-        try:
-            raw = utils.fetch(url, timeout=10)  # Short timeout for GraphQL API
-            try:
-                return json.loads(raw.decode('utf-8'))
-            except UnicodeDecodeError:
-                return json.loads(gzip.decompress(raw).decode('utf-8'))
-        except Exception as exc:
-            last_exc = exc
-            print(f'  GraphQL endpoint {endpoint} failed: {exc}', file=sys.stderr, flush=True)
-
-    # If both endpoints fail, re-raise the last exception
-    raise last_exc
+# ── Data fetch (web scraping replaces decommissioned GraphQL API) ───────────
 
 
-def fetch_article_json(url):
-    params = {
-        'operationName': 'ArticleDeeplinkQuery',
-        'variables': json.dumps({'ref': url}, separators=(',', ':')),
-        'query': ARTICLE_QUERY,
+def fetch_edition_from_web(issue_date):
+    """Fetch edition metadata from the weeklyedition web page __NEXT_DATA__.
+
+    The Economist decommissioned their GraphQL API (cp2-graphql-gateway returns
+    TLS errors and www.economist.com/graphql returns HTTP 410).  This function
+    scrapes the public weeklyedition page instead, returning the same shape as
+    the old FindEditionByDate GraphQL response.
+    """
+    try:
+        html = utils.fetch_html('https://www.economist.com/weeklyedition/' + issue_date)
+    except Exception as exc:
+        print(f'weeklyedition page fetch failed for {issue_date}: {exc}', file=sys.stderr, flush=True)
+        return {}
+    data = utils.parse_next_data(html)
+    content = ((data.get('props') or {}).get('pageProps') or {}).get('content') or {}
+    if not content:
+        return {}
+
+    # Convert web page components → GraphQL-compatible sections
+    sections = []
+    for comp in content.get('components') or []:
+        if comp.get('type') != 'COLLECTION':
+            continue
+        name = comp.get('name') or ''
+        articles = []
+        for art in comp.get('articles') or []:
+            headline = art.get('headline') or ''
+            url = art.get('url') or ''
+            if not headline or not url:
+                continue
+            articles.append({
+                'headline': headline,
+                'url': url,
+                'rubric': art.get('rubric'),
+                'flyTitle': art.get('flyTitle'),
+            })
+        if articles:
+            sections.append({'name': name, 'articles': articles})
+
+    return {
+        'headline': content.get('headline'),
+        'issueDate': content.get('issueDate') or (issue_date + 'T00:00:00.000Z'),
+        'cover': content.get('cover'),
+        'sections': sections,
     }
-    deep_url = 'https://cp2-graphql-gateway.p.aws.economist.com/graphql?' + urlencode(
-        params, safe='()!', quote_via=quote
+
+
+def fetch_article_from_web(url):
+    """Fetch article data by scraping the article web page __NEXT_DATA__.
+
+    Returns a dict mimicking the old GraphQL ArticleDeeplinkQuery response:
+        {'data': {'findArticleByUrl': article_dict}}
+
+    The web page embeds the same backend data model under
+    props.pageProps.content, so the extracted fields (headline, body,
+    leadComponent, narration, etc.) are structurally compatible with the
+    GraphQL response.
+    """
+    full_url = utils.canonical_article_url(url)
+    if not full_url:
+        return {'data': {'findArticleByUrl': {}}}
+
+    # Interactive articles don't embed __NEXT_DATA__ — they need a browser.
+    if '/interactive/' in full_url:
+        raise RuntimeError('Interactive articles are not supported (requires a browser)')
+
+    try:
+        html = utils.fetch_html(full_url)
+    except Exception as exc:
+        raise RuntimeError(f'Failed to fetch article page {full_url}: {exc}') from exc
+
+    data = utils.parse_next_data(html)
+    article_data = (
+        ((data.get('props') or {}).get('pageProps') or {}).get('cp2Content')
+        or ((data.get('props') or {}).get('pageProps') or {}).get('content')
+        or {}
     )
-    raw = utils.fetch(deep_url, timeout=10)  # Short timeout for GraphQL API
-    payload = utils.maybe_decompress(raw)
-    return json.loads(payload.decode('utf-8'))
+
+    # Ensure the body nodes are keyed by type (GraphQL convention) for
+    # downstream consumers (translate_issue_cache, etc.).  The web page
+    # already uses __typename on richer nodes, but the raw 'type' string
+    # on simple nodes is all most code paths check.
+    return {'data': {'findArticleByUrl': article_data}}
 
 
 def fetch_article_html_fallback(url):
@@ -455,14 +498,7 @@ def main():
 
     # ── 1. Fetch edition manifest ───────────────────────────────────────
     print(f'Fetching edition {issue_date} (id={issue_id})...', flush=True)
-    edition = {}
-    try:
-        payload = fetch_graphql('FindEditionByDate', EDITION_QUERY,
-                                {'issueDate': issue_date, 'editionType': 'WEEKLY'})
-        edition = ((payload.get('data') or {}).get('findEditionByDate') or {})
-    except Exception as exc:
-        print(f'Failed to fetch edition from GraphQL gateway: {exc}', file=sys.stderr, flush=True)
-
+    edition = fetch_edition_from_web(issue_date)
     if not edition:
         edition = build_topic_fallback_edition(issue_date)
     if not edition:
@@ -524,8 +560,7 @@ def main():
 
             article_data = None
             try:
-                payload = fetch_article_json(url)
-                article_data = ((payload.get('data') or {}).get('findArticleByUrl') or {})
+                payload = fetch_article_from_web(url)
             except Exception as exc:
                 print(f'  GraphQL fetch failed, trying HTML fallback: {exc}', file=sys.stderr, flush=True)
                 article_data = fetch_article_html_fallback(url)

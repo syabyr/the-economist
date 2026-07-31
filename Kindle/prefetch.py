@@ -561,8 +561,9 @@ def main():
             article_data = None
             try:
                 payload = fetch_article_from_web(url)
+                article_data = (payload.get('data') or {}).get('findArticleByUrl')
             except Exception as exc:
-                print(f'  GraphQL fetch failed, trying HTML fallback: {exc}', file=sys.stderr, flush=True)
+                print(f'  Web fetch failed, trying HTML fallback: {exc}', file=sys.stderr, flush=True)
                 article_data = fetch_article_html_fallback(url)
 
             if not article_data:

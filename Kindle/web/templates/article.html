@@ -39,7 +39,7 @@
 
     <div class="article-meta">
       <p class="article-date">
-        {{ article.date_published[:10] if article.date_published else "" }}
+        {{ issue_date }}
         {% if article.estimated_read_time %} &middot; ~{{ article.estimated_read_time }} min read{% endif %}
         {% if article.word_count %} &middot; {{ article.word_count }} words{% endif %}
       </p>

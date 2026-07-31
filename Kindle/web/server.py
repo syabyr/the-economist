@@ -188,7 +188,7 @@ def _first_image_url(article, issue_date, issue_id):
 def _article_teaser(article, issue_date, issue_id):
     return {
         **article,
-        'path': _article_path(article.get('section_slug'), article.get('date_published'), article.get('slug')),
+        'path': _article_path(article.get('section_slug'), issue_date, article.get('slug')),
         'image_url': _first_image_url(article, issue_date, issue_id),
     }
 
@@ -203,11 +203,8 @@ def _spec_teaser(article_spec, matched_article, issue_date, issue_id):
         }
 
     spec_url = article_spec.get('url') or ''
-    if spec_url:
-        if matched_article and spec_url.startswith('/'):
-            teaser['path'] = spec_url
-        elif not matched_article:
-            teaser['path'] = _economist_url(spec_url)
+    if spec_url and not matched_article:
+        teaser['path'] = _economist_url(spec_url)
 
     teaser.update({
         'headline': matched_article.get('headline') if matched_article else article_spec.get('headline') or '',

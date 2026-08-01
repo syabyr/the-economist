@@ -21,14 +21,14 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 HEADERS = {
-    'User-Agent': 'TheEconomist-Liskov-android',
-    'accept': 'multipart/mixed; deferSpec=20220824, application/json',
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36 Liskov',
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'accept-encoding': 'gzip',
-    'content-type': 'application/json',
-    'x-economist-consumer': 'TheEconomist-Liskov-android',
-    'x-teg-client-name': 'Economist-Android',
-    'x-teg-client-os': 'Android',
-    'x-teg-client-version': '4.40.0',
+    'x-requested-with': 'com.economist.lamarr',
+    'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': 'Android',
+    'upgrade-insecure-requests': '1',
+    'blaize_session': str(uuid4()),
 }
 
 RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -152,6 +152,7 @@ def fetch(url, extra_headers=None, timeout=120):
         headers.update(extra_headers)
     headers = {k: v for k, v in headers.items() if v}
     headers['x-app-trace-id'] = str(uuid4())
+    headers['blaize_session'] = str(uuid4())  # refresh per request
 
     req = Request(url, headers=headers)
     attempts = env_int('ECONOMIST_FETCH_RETRIES', 5)
@@ -182,13 +183,10 @@ def fetch(url, extra_headers=None, timeout=120):
 
 def fetch_html(url):
     """Fetch an HTML page, return decoded string."""
-    raw = fetch(
-        url,
-        {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'content-type': '',
-        },
-    )
+    # Append mobile-app query param so the server includes __NEXT_DATA__
+    sep = '&' if '?' in url else '?'
+    app_url = url + sep + 'app=core%2Cfocused&no-chrome=key&no-adverts=key&webview=liskov'
+    raw = fetch(app_url)
     return maybe_decompress(raw).decode('utf-8', 'replace')
 
 

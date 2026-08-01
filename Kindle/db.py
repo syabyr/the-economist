@@ -598,13 +598,21 @@ def backfill_article_slugs(conn):
 
 
 def get_article_by_slug(conn, section_slug, year, month, day, article_slug):
-    """Find article by URL components. Matches on section_slug + slug (the date
-    components exist for URL structure but may drift from date_published)."""
+    """Find article by URL components. Matches on section_slug + slug + issue_date.
+    Falls back to section_slug + slug alone if no exact date match."""
+    date_str = f'{year}-{month:02d}-{day:02d}'
     row = conn.execute("""
-        SELECT * FROM article
-        WHERE section_slug=? AND slug=?
+        SELECT article.* FROM article
+        JOIN edition ON article.edition_id = edition.id
+        WHERE article.section_slug=? AND article.slug=? AND edition.issue_date=?
         LIMIT 1
-    """, (section_slug, article_slug)).fetchone()
+    """, (section_slug, article_slug, date_str)).fetchone()
+    if not row:
+        row = conn.execute("""
+            SELECT * FROM article
+            WHERE section_slug=? AND slug=?
+            LIMIT 1
+        """, (section_slug, article_slug)).fetchone()
     return dict(row) if row else None
 
 

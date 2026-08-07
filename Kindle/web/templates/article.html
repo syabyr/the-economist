@@ -111,12 +111,12 @@
     <nav class="article-nav">
       <div class="article-nav-prev">
       {% if prev_info %}
-        <a href="{{ article_path(prev_info.section_slug, prev_info.date_published, prev_info.slug) }}">&larr; Previous article</a>
+        <a href="{{ article_path(prev_info) }}">&larr; Previous article</a>
       {% endif %}
       </div>
       <div class="article-nav-next">
       {% if next_info %}
-        <a href="{{ article_path(next_info.section_slug, next_info.date_published, next_info.slug) }}">Next article &rarr;</a>
+        <a href="{{ article_path(next_info) }}">Next article &rarr;</a>
       {% endif %}
       </div>
     </nav>

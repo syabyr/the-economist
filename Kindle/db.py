@@ -598,16 +598,24 @@ def backfill_article_slugs(conn):
 
 
 def get_article_by_slug(conn, section_slug, year, month, day, article_slug):
-    """Find article by URL components. Matches on section_slug + slug + issue_date.
-    Falls back to section_slug + slug alone if no exact date match."""
-    date_str = f'{year}-{month:02d}-{day:02d}'
+    """Find article by URL components. First tries exact match on url column (most reliable),
+    then falls back to section_slug + slug + date_published, then just section_slug + slug."""
+    url_to_match = f'/{section_slug}/{year}/{month:02d}/{day:02d}/{article_slug}'
     row = conn.execute("""
-        SELECT article.* FROM article
-        JOIN edition ON article.edition_id = edition.id
-        WHERE article.section_slug=? AND article.slug=? AND edition.issue_date=?
+        SELECT * FROM article
+        WHERE url=?
         LIMIT 1
-    """, (section_slug, article_slug, date_str)).fetchone()
+    """, (url_to_match,)).fetchone()
     if not row:
+        # Fallback: try matching by section_slug and slug with date_published
+        date_str = f'{year}-{month:02d}-{day:02d}'
+        row = conn.execute("""
+            SELECT * FROM article
+            WHERE section_slug=? AND slug=? AND substr(date_published, 1, 10)=?
+            LIMIT 1
+        """, (section_slug, article_slug, date_str)).fetchone()
+    if not row:
+        # Final fallback: just section_slug + slug
         row = conn.execute("""
             SELECT * FROM article
             WHERE section_slug=? AND slug=?
@@ -618,7 +626,7 @@ def get_article_by_slug(conn, section_slug, year, month, day, article_slug):
 
 def get_article_nav(conn, article_id):
     """Return (prev_article_dict, next_article_dict) for navigation within an edition.
-    Each dict has keys: section_slug, slug, date_published (or None if no prev/next).
+    Returns enough fields for _article_path to work: url, section_slug, slug, date_published.
     """
     art = conn.execute("SELECT edition_id, article_order FROM article WHERE id=?",
                        (article_id,)).fetchone()
@@ -628,12 +636,12 @@ def get_article_nav(conn, article_id):
     order = art['article_order']
 
     prev_row = conn.execute("""
-        SELECT section_slug, slug, date_published FROM article
+        SELECT url, section_slug, slug, date_published FROM article
         WHERE edition_id=? AND article_order < ? ORDER BY article_order DESC LIMIT 1
     """, (edition_id, order)).fetchone()
 
     next_row = conn.execute("""
-        SELECT section_slug, slug, date_published FROM article
+        SELECT url, section_slug, slug, date_published FROM article
         WHERE edition_id=? AND article_order > ? ORDER BY article_order ASC LIMIT 1
     """, (edition_id, order)).fetchone()
 

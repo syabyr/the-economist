@@ -31,16 +31,35 @@ def _get_conn():
     return db.get_connection()
 
 
-def _article_path(section_slug, date_str, slug):
-    """Build article URL path like /leaders/2026/05/21/slug-here"""
-    if not date_str:
-        return '#'
+def _article_path(article):
+    """Return the article's relative URL path.
+
+    Extracts the path from article.url field (most reliable method since Economist
+    uses multiple date conventions). Strips https://www.economist.com prefix to get
+    a relative path like /business/2026/07/27/article-slug.
+
+    Falls back to constructing from components if url field is missing.
+    """
+    # Use the exact URL from the article data - extract relative path
+    if article and article.get('url'):
+        url = article['url']
+        # Strip domain prefix if present
+        if url.startswith('http'):
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            return parsed.path
+        return url
+
+    # Fallback: construct from components if URL is missing
+    section_slug = article.get('section_slug') or 'article' if article else 'article'
+    slug = article.get('slug') or 'untitled' if article else 'untitled'
+    date_published = article.get('date_published') or '' if article else ''
     try:
-        dt = date_str[:10]
+        dt = date_published[:10]
         y, m, d = dt.split('-')
-        return f'/{section_slug or "article"}/{y}/{m}/{d}/{slug or "untitled"}'
+        return f'/{section_slug}/{y}/{m}/{d}/{slug}'
     except (ValueError, IndexError):
-        return f'/{section_slug or "article"}/1970/01/01/{slug or "untitled"}'
+        return f'/{section_slug}/1970/01/01/{slug}'
 
 
 def _economist_url(url):
@@ -188,7 +207,7 @@ def _first_image_url(article, issue_date, issue_id):
 def _article_teaser(article, issue_date, issue_id):
     return {
         **article,
-        'path': _article_path(article.get('section_slug'), issue_date, article.get('slug')),
+        'path': _article_path(article),
         'image_url': _first_image_url(article, issue_date, issue_id),
     }
 

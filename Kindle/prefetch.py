@@ -106,25 +106,8 @@ TOPIC_FALLBACKS = [
 # ── Data fetch (web scraping replaces decommissioned GraphQL API) ───────────
 
 
-def fetch_edition_from_web(issue_date):
-    """Fetch edition metadata from the weeklyedition web page __NEXT_DATA__.
-
-    The Economist decommissioned their GraphQL API (cp2-graphql-gateway returns
-    TLS errors and www.economist.com/graphql returns HTTP 410).  This function
-    scrapes the public weeklyedition page instead, returning the same shape as
-    the old FindEditionByDate GraphQL response.
-    """
-    try:
-        html = utils.fetch_html('https://www.economist.com/weeklyedition/' + issue_date)
-    except Exception as exc:
-        print(f'weeklyedition page fetch failed for {issue_date}: {exc}', file=sys.stderr, flush=True)
-        return {}
-    data = utils.parse_next_data(html)
-    content = ((data.get('props') or {}).get('pageProps') or {}).get('content') or {}
-    if not content:
-        return {}
-
-    # Convert web page components → GraphQL-compatible sections
+def _edition_from_content(content):
+    """Convert a weeklyedition pageProps.content dict → GraphQL-compatible edition."""
     sections = []
     for comp in content.get('components') or []:
         if comp.get('type') != 'COLLECTION':
@@ -144,25 +127,71 @@ def fetch_edition_from_web(issue_date):
             })
         if articles:
             sections.append({'name': name, 'articles': articles})
-
     return {
         'headline': content.get('headline'),
-        'issueDate': content.get('issueDate') or (issue_date + 'T00:00:00.000Z'),
+        'issueDate': content.get('issueDate') or '',
         'cover': content.get('cover'),
         'sections': sections,
     }
 
 
+def fetch_edition_from_web(issue_date):
+    """Fetch edition metadata.
+
+    Primary path: Next.js _next/data JSON (bypasses DataDome, no browser).
+    Fallback: scrape the weeklyedition HTML page's __NEXT_DATA__ via Playwright
+    (kept for when _next/data is unavailable).
+    """
+    try:
+        pp = utils.fetch_next_data(f'weeklyedition/{issue_date}')
+        content = pp.get('content') or {}
+        if content.get('components'):
+            edition = _edition_from_content(content)
+            if edition.get('issueDate'):
+                edition['issueDate'] = edition['issueDate'] or (issue_date + 'T00:00:00.000Z')
+            if edition.get('sections'):
+                print('Edition fetched via _next/data (no browser)', flush=True)
+                return edition
+    except Exception as exc:
+        print(f'_next/data weeklyedition failed, falling back to HTML: {exc}',
+              file=sys.stderr, flush=True)
+
+    # Fallback: HTML scraping (Playwright)
+    try:
+        html = utils.fetch_html('https://www.economist.com/weeklyedition/' + issue_date)
+    except Exception as exc:
+        print(f'weeklyedition page fetch failed for {issue_date}: {exc}', file=sys.stderr, flush=True)
+        return {}
+    data = utils.parse_next_data(html)
+    content = ((data.get('props') or {}).get('pageProps') or {}).get('content') or {}
+    if not content:
+        return {}
+    edition = _edition_from_content(content)
+    edition['issueDate'] = edition['issueDate'] or (issue_date + 'T00:00:00.000Z')
+    return edition
+
+
+def _article_next_data_path(url):
+    """Derive the _next/data path for an article URL.
+
+    'https://www.economist.com/leaders/2026/10/14/slug' → 'leaders/2026/10/14/slug'
+    """
+    path = urlparse(url).path.strip('/')
+    if path.endswith('/print'):
+        path = path[:-len('/print')]
+    return path
+
+
 def fetch_article_from_web(url):
-    """Fetch article data by scraping the article web page __NEXT_DATA__.
+    """Fetch article data.
 
     Returns a dict mimicking the old GraphQL ArticleDeeplinkQuery response:
         {'data': {'findArticleByUrl': article_dict}}
 
-    The web page embeds the same backend data model under
-    props.pageProps.content, so the extracted fields (headline, body,
-    leadComponent, narration, etc.) are structurally compatible with the
-    GraphQL response.
+    Primary path: Next.js _next/data JSON (bypasses DataDome, no browser).
+    The article body is present in the SSR JSON even for anonymous requests
+    (the paywall is enforced client-side).
+    Fallback: scrape the article HTML page's __NEXT_DATA__ via Playwright.
     """
     full_url = utils.canonical_article_url(url)
     if not full_url:
@@ -172,6 +201,17 @@ def fetch_article_from_web(url):
     if '/interactive/' in full_url:
         raise RuntimeError('Interactive articles are not supported (requires a browser)')
 
+    # Primary: _next/data JSON
+    try:
+        pp = utils.fetch_next_data(_article_next_data_path(full_url))
+        article_data = pp.get('content') or {}
+        if article_data.get('body') or article_data.get('headline'):
+            return {'data': {'findArticleByUrl': article_data}}
+    except Exception as exc:
+        print(f'  _next/data article failed, falling back to HTML: {exc}',
+              file=sys.stderr, flush=True)
+
+    # Fallback: HTML scraping (Playwright)
     try:
         html = utils.fetch_html(full_url)
     except Exception as exc:
@@ -183,11 +223,6 @@ def fetch_article_from_web(url):
         or ((data.get('props') or {}).get('pageProps') or {}).get('content')
         or {}
     )
-
-    # Ensure the body nodes are keyed by type (GraphQL convention) for
-    # downstream consumers (translate_issue_cache, etc.).  The web page
-    # already uses __typename on richer nodes, but the raw 'type' string
-    # on simple nodes is all most code paths check.
     return {'data': {'findArticleByUrl': article_data}}
 
 
@@ -310,6 +345,18 @@ def parse_audio_m3u_order(issue_date):
 
 
 def fetch_weeklyedition_sections(issue_date):
+    """Fetch section/article ordering for an issue via _next/data (no browser)."""
+    try:
+        pp = utils.fetch_next_data(f'weeklyedition/{issue_date}')
+        content = pp.get('content') or {}
+        # Prefer the pre-split headerSections/sections when present; otherwise
+        # fall back to the raw COLLECTION components (same name/articles shape).
+        if content.get('headerSections') or content.get('sections'):
+            return (content.get('headerSections') or []) + (content.get('sections') or [])
+        return list(content.get('components') or [])
+    except Exception:
+        pass
+    # Fallback: HTML scraping (Playwright)
     try:
         html = utils.fetch_html('https://www.economist.com/weeklyedition/' + issue_date)
         data = utils.parse_next_data(html)

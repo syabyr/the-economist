@@ -12,6 +12,7 @@ import re
 import shlex
 import socket
 import ssl
+import sys
 import time
 from hashlib import sha256
 from html import unescape
@@ -167,6 +168,16 @@ def playwright_fetch_html(url, timeout=30000):
 
 
 # curl_cffi 可选依赖 + 全局 Session
+# On macOS (esp. Python 3.14 / Darwin 27), curl_cffi's _wrapper.abi3.so fails
+# to resolve the CoreFoundation symbol '_CFArrayAppendValue' unless
+# CoreFoundation is already loaded into the process.  Preload it via ctypes.
+try:
+    if sys.platform == 'darwin':
+        import ctypes
+        ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+except Exception:
+    pass
+
 try:
     from curl_cffi import requests as curl_cffi_requests
     from curl_cffi.requests import Session as CurlSession
@@ -456,6 +467,117 @@ def parse_next_data(html):
     if not match:
         raise ValueError('missing __NEXT_DATA__')
     return json.loads(unescape(match.group(1)))
+
+
+# ── Next.js _next/data JSON fetcher (bypasses DataDome) ──────────────────────
+#
+# The Economist's www.economist.com is a Next.js app.  Its pages embed the
+# server-rendered data in <script id="__NEXT_DATA__">, but the HTML pages are
+# gated by DataDome (a bot-detection layer that blocks curl_cffi and even
+# Playwright once it fingerprints automation).
+#
+# However, Next.js also exposes the *same* SSR data as JSON at:
+#     /_next/data/<buildId>/<page-path>.json
+# This route is served from the static/CDN layer and is NOT protected by
+# DataDome, so it can be fetched with a plain curl_cffi request — no browser
+# required.  The paywall is enforced client-side (JS), so the full article
+# body is present in the JSON even for anonymous requests.
+#
+# `buildId` rotates whenever the site redeploys.  We discover it by fetching a
+# deliberately-bogus _next/data URL: Next.js serves its HTML 404 page, whose
+# own __NEXT_DATA__ contains the current buildId.
+
+_NEXT_BUILD_ID = None
+_NEXT_BUILD_ID_TS = 0.0
+_NEXT_BUILD_ID_TTL = 3600  # cache buildId for 1 hour
+
+
+def _discover_build_id(timeout=30):
+    """Discover and cache the current Next.js buildId.
+
+    Returns the cached value if still fresh, otherwise refetches.  The buildId
+    is read from the __NEXT_DATA__ of a bogus _next/data 404 page (which is not
+    DataDome-protected).  Returns None if curl_cffi is unavailable or discovery
+    fails (caller should fall back to the Playwright/HTML path).
+    """
+    global _NEXT_BUILD_ID, _NEXT_BUILD_ID_TS
+    if _NEXT_BUILD_ID and (time.time() - _NEXT_BUILD_ID_TS) < _NEXT_BUILD_ID_TTL:
+        return _NEXT_BUILD_ID
+    if not _HAS_CURL_CFFI:
+        return _NEXT_BUILD_ID
+    sess = _get_curl_session()
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = sess.get(
+                'https://www.economist.com/_next/data/x/discover-build-id.json',
+                headers=HEADERS, timeout=timeout,
+            )
+            _sync_cookies_to_env()
+            m = re.search(r'"buildId":"([^"]+)"', resp.text)
+            if m:
+                _NEXT_BUILD_ID = m.group(1)
+                _NEXT_BUILD_ID_TS = time.time()
+                print(f'Next.js buildId: {_NEXT_BUILD_ID}', flush=True)
+                return _NEXT_BUILD_ID
+            last_exc = RuntimeError('buildId not found in 404 page')
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(2 * attempt + 1)
+    print(f'buildId discovery failed: {last_exc}', file=__import__('sys').stderr, flush=True)
+    return _NEXT_BUILD_ID
+
+
+def _invalidate_build_id():
+    """Force the next _discover_build_id() call to refetch."""
+    global _NEXT_BUILD_ID, _NEXT_BUILD_ID_TS
+    _NEXT_BUILD_ID = None
+    _NEXT_BUILD_ID_TS = 0.0
+
+
+def fetch_next_data(path, timeout=30):
+    """Fetch Next.js _next/data JSON for a page path. Returns pageProps dict.
+
+    Bypasses DataDome entirely.  The returned pageProps contains `content`
+    (the edition or article data) in the same shape that __NEXT_DATA__ scraping
+    produced, so downstream consumers are unchanged.
+
+    Args:
+        path: page path without leading/trailing slash, e.g.
+              'weeklyedition/2026-10-10' or 'leaders/2026/10/14/some-slug'.
+    Raises:
+        RuntimeError if the data cannot be fetched after a buildId refresh.
+    """
+    build_id = _discover_build_id(timeout=timeout)
+    if not build_id:
+        raise RuntimeError('could not discover Next.js buildId (curl_cffi unavailable?)')
+    path = path.strip('/')
+    last_exc = None
+    for attempt in range(2):
+        url = f'https://www.economist.com/_next/data/{build_id}/{path}.json'
+        try:
+            sess = _get_curl_session()
+            resp = sess.get(url, headers=HEADERS, timeout=timeout)
+            _sync_cookies_to_env()
+            text = resp.text
+            # A valid _next/data response is JSON.  When buildId has rotated,
+            # Next.js serves its HTML 404 page instead (starts with '<').
+            if text.lstrip().startswith('{'):
+                data = json.loads(text)
+                # The _next/data JSON route returns pageProps at the top level
+                # (unlike the __NEXT_DATA__ embedded in HTML, which wraps it
+                # under props.pageProps).  Handle both shapes.
+                return data.get('pageProps') or (data.get('props') or {}).get('pageProps') or {}
+        except Exception as exc:
+            last_exc = exc
+        # Either non-JSON (buildId rotated) or an exception — rediscover once.
+        _invalidate_build_id()
+        build_id = _discover_build_id(timeout=timeout)
+        if not build_id:
+            break
+    if last_exc:
+        raise RuntimeError(f'_next/data fetch failed for {path}: {last_exc}') from last_exc
+    raise RuntimeError(f'_next/data fetch failed for {path}')
 
 
 # ── textJson → HTML rendering ───────────────────────────────────────────────

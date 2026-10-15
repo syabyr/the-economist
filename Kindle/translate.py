@@ -86,7 +86,7 @@ def parse_translated_fragments(translated_text):
     return fragments
 
 
-def call_nvidia_api(full_text, model='meta/llama-3.1-8b-instruct', max_tokens=16384, temperature=0.1):
+def call_nvidia_api(full_text, model='google/gemma-4-31b-it', max_tokens=16384, temperature=0.1):
     """Call NVIDIA API for full-article translation."""
     api_key = os.environ.get('NVIDIA_API_KEY')
     base_url = 'https://integrate.api.nvidia.com/v1'
@@ -138,6 +138,16 @@ Article to translate:
                 result = json.loads(resp.read().decode('utf-8'))
                 return result['choices'][0]['message']['content'].strip()
         except HTTPError as e:
+            body = ''
+            try:
+                body = e.read().decode('utf-8', 'replace')
+            except Exception:
+                pass
+            # 410 Gone = model end-of-life; no point retrying
+            if e.code == 410:
+                print(f'  Model {model} is no longer available (HTTP 410): {body[:200]}', file=sys.stderr)
+                print('  -> Use --model to specify a current model (try: google/gemma-4-31b-it)', file=sys.stderr)
+                raise
             if e.code in [504, 500, 502, 429] and attempt < max_retries - 1:
                 delay = 30 * (attempt + 1)
                 print(f'  Got HTTP {e.code}, retrying in {delay}s... (attempt {attempt+1}/{max_retries})', flush=True)
@@ -244,7 +254,7 @@ def main():
     parser.add_argument('--article-index', type=int, default=None, help='Only translate article N (0-indexed)')
     parser.add_argument('--force', action='store_true', help='Re-translate even if translations exist')
     parser.add_argument('--paragraph-mode', action='store_true', help='Use legacy paragraph-by-paragraph translation')
-    parser.add_argument('--model', default='meta/llama-3.1-8b-instruct', help='LLM model to use for translation')
+    parser.add_argument('--model', default='google/gemma-4-31b-it', help='LLM model to use for translation')
     args = parser.parse_args()
 
     issue_date = args.issue_date

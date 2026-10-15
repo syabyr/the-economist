@@ -64,13 +64,32 @@ def export_temp_cache(conn, edition, articles, issue_date, issue_id):
         with open(os.path.join(articles_dir, art_hash + '.json'), 'wb') as fh:
             fh.write(json.dumps(article_payload, ensure_ascii=False).encode('utf-8'))
 
-    # Symlink images
+    # Resize and copy images to temp dir (instead of symlink to full-res)
+    max_width = int(os.environ.get('ECONOMIST_IMAGE_WIDTH', '600'))
+    quality = int(os.environ.get('ECONOMIST_IMAGE_QUALITY', '80'))
     src_images = os.path.join(os.getcwd(), 'images', f'{issue_date}-{issue_id}')
     if os.path.isdir(src_images):
+        try:
+            from PIL import Image
+        except ImportError:
+            Image = None
         for fname in os.listdir(src_images):
             src = os.path.join(src_images, fname)
-            if os.path.isfile(src):
-                os.symlink(src, os.path.join(images_dir, fname))
+            dst = os.path.join(images_dir, fname)
+            if not os.path.isfile(src):
+                continue
+            if Image:
+                try:
+                    img = Image.open(src)
+                    if img.width > max_width:
+                        ratio = max_width / img.width
+                        new_size = (max_width, int(img.height * ratio))
+                        img = img.resize(new_size, Image.LANCZOS)
+                    img.save(dst, quality=quality)
+                except Exception:
+                    shutil.copy2(src, dst)
+            else:
+                shutil.copy2(src, dst)
 
     # Export translate.json with recipe-compatible keys
     model = os.environ.get('ECONOMIST_TRANSLATE_MODEL', 'nvidia/riva-translate-4b-instruct-v1.1')

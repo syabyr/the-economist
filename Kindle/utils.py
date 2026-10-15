@@ -21,17 +21,235 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.124 Mobile Safari/537.36 Liskov',
-    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'accept-encoding': 'gzip',
-    'x-requested-with': 'com.economist.lamarr',
-    'sec-ch-ua-mobile': '?1',
-    'sec-ch-ua-platform': 'Android',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
+    'sec-ch-ua': '"Chromium";v="150", "Google Chrome";v="150", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'none',
+    'sec-fetch-user': '?1',
     'upgrade-insecure-requests': '1',
-    'blaize_session': str(uuid4()),
+}
+
+# GraphQL API 专用 headers (app-style)
+GRAPHQL_HEADERS = {
+    'User-Agent': 'TheEconomist-Liskov-android',
+    'accept': 'multipart/mixed; deferSpec=20220824, application/json',
+    'accept-encoding': 'gzip',
+    'content-type': 'application/json',
+    'x-economist-consumer': 'TheEconomist-Liskov-android',
+    'x-teg-client-name': 'Economist-Android',
+    'x-teg-client-os': 'Android',
+    'x-teg-client-version': '4.40.0',
 }
 
 RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+# Playwright 可选依赖（真实浏览器，用于绕过 DataDome / Cloudflare）
+try:
+    from playwright.sync_api import sync_playwright
+    _HAS_PLAYWRIGHT = True
+except ImportError:
+    _HAS_PLAYWRIGHT = False
+    sync_playwright = None
+
+_PLAYWRIGHT = None  # sync_playwright 实例
+_PW_BROWSER = None
+_PW_CONTEXT = None
+
+
+def _get_playwright_context():
+    """Lazy-create a Playwright browser context with anti-detection + cookies."""
+    global _PLAYWRIGHT, _PW_BROWSER, _PW_CONTEXT
+    if _PW_CONTEXT is not None:
+        return _PW_CONTEXT
+    if not _HAS_PLAYWRIGHT:
+        return None
+
+    _PLAYWRIGHT = sync_playwright().start()
+
+    headless = env_flag('ECONOMIST_PLAYWRIGHT_HEADLESS', False)
+    _PW_BROWSER = _PLAYWRIGHT.chromium.launch(
+        headless=headless,
+        args=[
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+        ],
+    )
+
+    _PW_CONTEXT = _PW_BROWSER.new_context(
+        user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+        viewport={'width': 1440, 'height': 900},
+        locale='en-US',
+        timezone_id='America/New_York',
+    )
+
+    # 反检测：移除 webdriver 标记等
+    _PW_CONTEXT.add_init_script('''
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        window.chrome = { runtime: {} };
+    ''')
+
+    # 注入 cookies
+    cookie_str = os.environ.get('ECONOMIST_COOKIE', '')
+    if cookie_str:
+        cookies = []
+        for part in cookie_str.split(';'):
+            part = part.strip()
+            if '=' in part:
+                k, v = part.split('=', 1)
+                cookies.append({
+                    'name': k.strip(),
+                    'value': v.strip(),
+                    'domain': '.economist.com',
+                    'path': '/',
+                })
+        if cookies:
+            _PW_CONTEXT.add_cookies(cookies)
+            print(f'Injected {len(cookies)} cookies into Playwright browser', flush=True)
+
+    return _PW_CONTEXT
+
+
+def close_playwright():
+    """Close the Playwright browser (call at program exit."""
+    global _PLAYWRIGHT, _PW_BROWSER, _PW_CONTEXT
+    if _PW_CONTEXT:
+        try:
+            _PW_CONTEXT.close()
+        except Exception:
+            pass
+        _PW_CONTEXT = None
+    if _PW_BROWSER:
+        try:
+            _PW_BROWSER.close()
+        except Exception:
+            pass
+        _PW_BROWSER = None
+    if _PLAYWRIGHT:
+        try:
+            _PLAYWRIGHT.stop()
+        except Exception:
+            pass
+        _PLAYWRIGHT = None
+
+
+def playwright_fetch_html(url, timeout=30000):
+    """Fetch an HTML page using Playwright (real browser). Returns HTML string.
+
+    Most reliable for pages protected by DataDome / Cloudflare.
+    """
+    ctx = _get_playwright_context()
+    if ctx is None:
+        raise RuntimeError('Playwright not available')
+
+    page = ctx.new_page()
+    try:
+        resp = page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+        # 等一下让 JS 渲染完 __NEXT_DATA__
+        try:
+            page.wait_for_selector('#__NEXT_DATA__', state='attached', timeout=5000)
+        except Exception:
+            # 没有 __NEXT_DATA__ 也没关系，直接返回内容
+            pass
+        # 稍微等一下页面渲染
+        page.wait_for_timeout(1500)
+        content = page.content()
+        return content
+    finally:
+        page.close()
+
+
+# curl_cffi 可选依赖 + 全局 Session
+try:
+    from curl_cffi import requests as curl_cffi_requests
+    from curl_cffi.requests import Session as CurlSession
+    _HAS_CURL_CFFI = True
+except ImportError:
+    _HAS_CURL_CFFI = False
+    CurlSession = None
+
+_CURL_SESSION = None
+_CURL_IMPERSONATE = 'chrome150'
+
+
+def _get_curl_session():
+    """Lazy-create a global curl_cffi Session with impersonation."""
+    global _CURL_SESSION
+    if _CURL_SESSION is None and _HAS_CURL_CFFI:
+        _CURL_SESSION = CurlSession(impersonate=_CURL_IMPERSONATE)
+        # 初始加载 cookies
+        cookies = _get_cookies_dict()
+        if cookies:
+            for k, v in cookies.items():
+                _CURL_SESSION.cookies.set(k, v, domain='.economist.com')
+    return _CURL_SESSION
+
+
+def _sync_cookies_to_env():
+    """把 session 里的 cookies 同步回 ECONOMIST_COOKIE 环境变量。"""
+    sess = _CURL_SESSION
+    if sess is None:
+        return
+    parts = []
+    for k, v in sess.cookies.items():
+        parts.append(f'{k}={v}')
+    if parts:
+        os.environ['ECONOMIST_COOKIE'] = '; '.join(parts)
+
+
+def load_cookie_file(path='cookie.txt'):
+    """Load cookies from a cookie.txt file into ECONOMIST_COOKIE env var.
+
+    Supports both raw "key=value; key2=value2" format and Netscape cookies.txt format.
+    """
+    if not path or not os.path.exists(path):
+        return 0
+    with open(path, 'r', encoding='utf-8') as f:
+        raw = f.read().strip()
+
+    if not raw:
+        return 0
+
+    # 如果是 Netscape 格式（以 # 开头或包含制表符分隔的 7 列）
+    lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.startswith('#')]
+    if lines and all('\t' in l for l in lines[:5]):
+        # Netscape format: domain\tflag\tpath\tsecure\texpiration\tname\tvalue
+        cookies = []
+        for l in lines:
+            parts = l.split('\t')
+            if len(parts) >= 7:
+                cookies.append(f'{parts[5]}={parts[6]}')
+        cookie_str = '; '.join(cookies)
+    else:
+        # 原始 cookie header 格式
+        cookie_str = raw
+
+    os.environ['ECONOMIST_COOKIE'] = cookie_str
+    # 数一下有多少个 cookie
+    count = len([c for c in cookie_str.split(';') if '=' in c.strip()])
+    print(f'Loaded {count} cookies from {path}', flush=True)
+    return count
+
+
+def _get_cookies_dict():
+    """Parse ECONOMIST_COOKIE env var into a dict for requests/curl_cffi."""
+    cookie_str = os.environ.get('ECONOMIST_COOKIE', '')
+    if not cookie_str:
+        return {}
+    cookies = {}
+    for part in cookie_str.split(';'):
+        part = part.strip()
+        if '=' in part:
+            k, v = part.split('=', 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
 
 
 def env_flag(name, default=False):
@@ -146,31 +364,57 @@ def canonical_article_url(url):
 # ── HTTP fetch ──────────────────────────────────────────────────────────────
 
 def fetch(url, extra_headers=None, timeout=120):
-    """HTTP GET with retry/backoff. Returns raw bytes."""
+    """HTTP GET with retry/backoff. Returns raw bytes.
+
+    Uses curl_cffi (TLS fingerprint impersonation) if available to bypass Cloudflare,
+    falls back to standard urllib otherwise.
+    """
     headers = dict(HEADERS)
     if extra_headers:
         headers.update(extra_headers)
     headers = {k: v for k, v in headers.items() if v}
-    headers['x-app-trace-id'] = str(uuid4())
-    headers['blaize_session'] = str(uuid4())  # refresh per request
 
-    req = Request(url, headers=headers)
     attempts = env_int('ECONOMIST_FETCH_RETRIES', 5)
     base_delay = float(os.environ.get('ECONOMIST_FETCH_RETRY_DELAY', '1.5'))
+    request_delay = float(os.environ.get('ECONOMIST_FETCH_DELAY', '0'))
+    if request_delay > 0:
+        time.sleep(request_delay)
     last_exc = None
 
     for attempt in range(1, attempts + 1):
         try:
-            with urlopen(req, timeout=timeout) as resp:
-                return resp.read()
-        except HTTPError as exc:
+            if _HAS_CURL_CFFI:
+                sess = _get_curl_session()
+                resp = sess.get(url, headers=headers, timeout=timeout)
+                # 同步最新 cookies 回环境变量
+                _sync_cookies_to_env()
+                # 对 403 也返回 body —— 有时 Cloudflare 返回 403 但 body 是实际内容
+                if resp.status_code == 403 and resp.content:
+                    return resp.content
+                resp.raise_for_status()
+                return resp.content
+            else:
+                # Fallback: urllib
+                cookie = os.environ.get('ECONOMIST_COOKIE', '')
+                if cookie and 'Cookie' not in headers:
+                    headers['Cookie'] = cookie
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=timeout) as resp:
+                    return resp.read()
+        except Exception as exc:
             last_exc = exc
-            if exc.code not in RETRYABLE_HTTP_STATUS or attempt == attempts:
+            # 检查是否是不可重试的状态码
+            status_code = None
+            if hasattr(exc, 'code'):
+                status_code = exc.code
+            elif hasattr(exc, 'response') and hasattr(exc.response, 'status_code'):
+                status_code = exc.response.status_code
+
+            if status_code is not None and status_code not in RETRYABLE_HTTP_STATUS:
                 raise
-        except (URLError, ssl.SSLError, TimeoutError, socket.timeout, ConnectionError) as exc:
-            last_exc = exc
             if attempt == attempts:
                 raise
+
         delay = base_delay * attempt
         print(
             f'retry {attempt}/{attempts} for {url}: {last_exc}',
@@ -182,11 +426,23 @@ def fetch(url, extra_headers=None, timeout=120):
 
 
 def fetch_html(url):
-    """Fetch an HTML page, return decoded string."""
-    # Append mobile-app query param so the server includes __NEXT_DATA__
-    sep = '&' if '?' in url else '?'
-    app_url = url + sep + 'app=core%2Cfocused&no-chrome=key&no-adverts=key&webview=liskov'
-    raw = fetch(app_url)
+    """Fetch an HTML page, return decoded string.
+
+    Priority:
+      1. Playwright (real browser) — best for DataDome/Cloudflare-protected pages
+      2. curl_cffi (TLS fingerprint impersonation) — fast, good for most pages
+      3. urllib — fallback
+    """
+    # 优先用 Playwright（如果可用且不是简单资源请求）
+    if _HAS_PLAYWRIGHT and env_flag('ECONOMIST_USE_PLAYWRIGHT', True):
+        try:
+            return playwright_fetch_html(url)
+        except Exception as exc:
+            print(f'  Playwright fetch failed, falling back: {exc}',
+                  file=__import__('sys').stderr, flush=True)
+
+    # Fallback: curl_cffi / urllib
+    raw = fetch(url)
     return maybe_decompress(raw).decode('utf-8', 'replace')
 
 

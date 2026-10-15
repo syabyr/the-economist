@@ -22,6 +22,11 @@ from urllib.parse import urlencode, urlparse, quote
 import db
 import utils
 
+# ── Load config & cookies ──────────────────────────────────────────────────
+
+utils.load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+utils.load_cookie_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookie.txt'))
+
 # ── GraphQL queries ─────────────────────────────────────────────────────────
 
 EDITION_QUERY = (
@@ -689,4 +694,7 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        utils.close_playwright()

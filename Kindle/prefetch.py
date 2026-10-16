@@ -539,58 +539,76 @@ def download_audio_zip(issue_date, issue_id, edition_db_id, conn, sections):
                 mp3_names.append(os.path.basename(name))
         print(f'  Extracted {len(mp3_names)} mp3s from audio zip', flush=True)
 
-    # Build article lookup: (section_key, headline_key) → (article_id, url)
-    # and also a flat list for headline-only matching.
-    article_by_keys = {}
-    article_by_headline = {}
+    # Match mp3 files to articles by position within section.
+    #
+    # The mp3 titles in the zip are audio-edition-specific short labels that
+    # don't correspond to any single article field (headline, flyTitle, or
+    # printHeadline).  However, within each section the mp3 files are in the
+    # same order as the articles (sorted by their global sequence number).
+    # Articles without audio (cartoons, etc.) are typically at the end of a
+    # section, so matching from the start aligns correctly.
+    from collections import defaultdict
+    mp3_by_section = defaultdict(list)  # section_key → [(seq, filename), ...]
+    unmatched_names = []
+    for name in mp3_names:
+        m = _AUDIO_NAME_RE.match(name)
+        if not m:
+            unmatched_names.append(name)
+            continue
+        seq = int(m.group(1))
+        section_name = m.group(2).replace('-', ' ').strip()
+        sk = utils.normalize_text_key(section_name)
+        mp3_by_section[sk].append((seq, name))
+    for sk in mp3_by_section:
+        mp3_by_section[sk].sort()
+
+    matched = 0
+    unmatched = len(unmatched_names)
+    used_section_keys = set()
     for section in sections:
         section_name = (section.get('name') or '').strip()
+        sk = utils.normalize_text_key(section_name)
+        # mp3 section names use "and" where the print edition uses "&"
+        # (e.g. "Middle East and Africa" vs "Middle East & Africa"),
+        # so match with keys_match rather than exact key equality.
+        mp3_list = mp3_by_section.get(sk, [])
+        if not mp3_list:
+            for mp3_sk, items in mp3_by_section.items():
+                if mp3_sk in used_section_keys:
+                    continue
+                if utils.keys_match(section_name, mp3_sk):
+                    mp3_list = items
+                    used_section_keys.add(mp3_sk)
+                    break
+        if not mp3_list:
+            continue
+        used_section_keys.add(sk)
+        # Get article DB ids for this section, in order
+        article_ids = []
         for article in section.get('articles') or ():
             url = utils.canonical_article_url(article.get('url') or '')
             if not url:
                 continue
-            headline = (article.get('headline') or '').strip()
             row = conn.execute(
                 'SELECT id FROM article WHERE edition_id=? AND url=?',
                 (edition_db_id, url),
             ).fetchone()
-            if not row:
+            if row:
+                article_ids.append(row['id'])
+        # Positional match: mp3[i] → article[i]
+        for i, (_, name) in enumerate(mp3_list):
+            if i >= len(article_ids):
+                unmatched += 1
                 continue
-            aid = row['id']
-            sk = utils.normalize_text_key(section_name)
-            hk = utils.normalize_text_key(headline)
-            article_by_keys[(sk, hk)] = aid
-            article_by_headline[hk] = aid
-
-    # Match each mp3 to an article
-    matched = 0
-    unmatched = 0
-    for name in sorted(mp3_names):
-        m = _AUDIO_NAME_RE.match(name)
-        if not m:
-            unmatched += 1
-            continue
-        section_name = m.group(2).replace('-', ' ').strip()
-        title = m.group(3).replace('-', ' ').replace('_', "'").strip()
-        sk = utils.normalize_text_key(section_name)
-        hk = utils.normalize_text_key(title)
-
-        aid = article_by_keys.get((sk, hk))
-        if aid is None:
-            # Fallback: headline-only match
-            aid = article_by_headline.get(hk)
-        if aid is None:
-            unmatched += 1
-            continue
-
-        rel_path = db.audio_local_path(issue_date, issue_id,
-                                        AUDIO_CDN_URL.format(filename=name))
-        audio_url = AUDIO_CDN_URL.format(filename=name)
-        conn.execute(
-            'UPDATE article SET audio_url=?, audio_path=? WHERE id=?',
-            (audio_url, rel_path, aid),
-        )
-        matched += 1
+            aid = article_ids[i]
+            rel_path = db.audio_local_path(issue_date, issue_id,
+                                            AUDIO_CDN_URL.format(filename=name))
+            audio_url = AUDIO_CDN_URL.format(filename=name)
+            conn.execute(
+                'UPDATE article SET audio_url=?, audio_path=? WHERE id=?',
+                (audio_url, rel_path, aid),
+            )
+            matched += 1
 
     conn.commit()
     print(f'Audio zip: {matched} matched, {unmatched} unmatched '

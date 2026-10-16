@@ -633,9 +633,12 @@ def main():
             date_published = (article_data.get('datePublished')
                               or article_data.get('dateFirstPublished') or '')
 
-            # Audio
+            # Audio — use None (not '') when absent so upsert_article's
+            # COALESCE preserves any previously-stored audio_url (e.g. when
+            # narration.url is null in the current _next/data response but
+            # was populated in an earlier run).
             audio_links = utils.collect_audio_links(article_data)
-            audio_url = audio_links[0]['url'] if audio_links else ''
+            audio_url = audio_links[0]['url'] if audio_links else None
             audio_duration = audio_links[0].get('duration') if audio_links else None
 
             # Images in article (preserve traversal order so first image aligns with lead image)

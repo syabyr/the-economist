@@ -2,9 +2,9 @@
 """Phase 1: Fetch edition metadata + article content + images → SQLite.
 
 Usage:
-    python3 prefetch.py YYYY-MM-DD [ISSUE_ID] [--skip-images]
+    python3 prefetch.py YYYY-MM-DD [--issue-id ID] [--skip-images]
 
-If ISSUE_ID is omitted it is derived from the ISO week number.
+If --issue-id is omitted it is derived from the ISO week number.
 Set ECONOMIST_CACHE_ONLY=1 to skip network fetches for articles already in the DB.
 """
 
@@ -537,7 +537,7 @@ def build_topic_fallback_edition(issue_date):
 def main():
     parser = argparse.ArgumentParser(description='Prefetch Economist edition into SQLite cache')
     parser.add_argument('issue_date', help='YYYY-MM-DD')
-    parser.add_argument('issue_id', nargs='?', default=None, help='Issue ID (auto-derived if omitted)')
+    parser.add_argument('--issue-id', default=None, help='Issue ID (auto-derived from ISO week if omitted)')
     parser.add_argument('--skip-images', action='store_true', help='Skip image download')
     args = parser.parse_args()
 

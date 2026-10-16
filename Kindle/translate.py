@@ -2,7 +2,7 @@
 """Phase 2: Translate articles using FULL-ARTICLE translation (context-aware)
 
 Usage:
-    python3 translate.py YYYY-MM-DD [ISSUE_ID] [--article-index N] [--force] [--paragraph-mode]
+    python3 translate.py YYYY-MM-DD [--issue-id ID] [--article-index N] [--force] [--paragraph-mode]
 
 Options:
     --force              Re-translate articles that already have translations
@@ -250,7 +250,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='Translate Economist articles (FULL-ARTICLE mode)')
     parser.add_argument('issue_date', help='YYYY-MM-DD')
-    parser.add_argument('issue_id', nargs='?', default=None, help='Issue ID (auto-derived if omitted)')
+    parser.add_argument('--issue-id', default=None, help='Issue ID (auto-derived from ISO week if omitted)')
     parser.add_argument('--article-index', type=int, default=None, help='Only translate article N (0-indexed)')
     parser.add_argument('--force', action='store_true', help='Re-translate even if translations exist')
     parser.add_argument('--paragraph-mode', action='store_true', help='Use legacy paragraph-by-paragraph translation')

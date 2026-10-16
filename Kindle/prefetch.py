@@ -448,6 +448,156 @@ def resolve_ordered_sections(issue_date):
     return ordered_sections
 
 
+# ── Audio edition zip download ──────────────────────────────────────────────
+#
+# The Economist exposes a complete-edition audio archive as a single zip at:
+#     https://economist.com/mobile-assets/{tegId}-audio.zip
+# The tegId for a given issue date is looked up from a community-maintained
+# searchEditions{YYYY}.json index (derived from the Economist searchEditions
+# GraphQL).  The zip contains one mp3 per article, named:
+#     {NNN}-{Section}---{Title}-{sha256hex}.mp3
+# These are the same files served individually at content-assets/audio/{name}.
+# Downloading the zip is one HTTP request for the entire edition (vs 70+
+# per-article requests), and it works even when narration.url is null in the
+# anonymous _next/data response.
+
+AUDIO_ZIP_INDEX_URL = 'https://jingking.github.io/The-Economist-Audio-List/searchEditions{year}.json'
+AUDIO_ZIP_URL = 'https://economist.com/mobile-assets/{teg_id}-audio.zip'
+AUDIO_CDN_URL = 'https://www.economist.com/content-assets/audio/{filename}'
+
+_AUDIO_NAME_RE = re.compile(r'^(\d+)-(.+?)---(.+)-[0-9a-f]{32}\.mp3$')
+
+
+def fetch_edition_teg_id(issue_date, timeout=20):
+    """Look up the tegId for an issue date from the searchEditions JSON index.
+
+    Returns the tegId string, or None if not found.
+    """
+    year = issue_date[:4]
+    index_url = AUDIO_ZIP_INDEX_URL.format(year=year)
+    # Also try the previous year (Jan issues may be indexed under prior year).
+    for url in [index_url, AUDIO_ZIP_INDEX_URL.format(year=str(int(year) - 1))]:
+        try:
+            raw = utils.fetch(url, timeout=timeout)
+            data = json.loads(utils.maybe_decompress(raw).decode('utf-8', 'replace'))
+        except Exception as exc:
+            print(f'  audio index fetch failed ({url}): {exc}', file=sys.stderr, flush=True)
+            continue
+        edges = (data.get('data') or {}).get('searchEditions', {}).get('edges') or []
+        for edge in edges:
+            node = edge.get('node') or {}
+            issue_dt = (node.get('issueDate') or '')[:10]
+            if issue_dt == issue_date:
+                return node.get('tegId')
+    return None
+
+
+def download_audio_zip(issue_date, issue_id, edition_db_id, conn, sections):
+    """Download the complete-edition audio zip and match files to articles.
+
+    Extracts mp3s into audio/{issue_date}-{issue_id}/, then matches each
+    filename's section+title to articles in the edition.  For each match,
+    updates audio_url (content-assets CDN URL) and audio_path in the DB.
+
+    Returns the number of mp3 files extracted.
+    """
+    teg_id = fetch_edition_teg_id(issue_date)
+    if not teg_id:
+        print('  No tegId found for audio zip (issue not in searchEditions index)',
+              file=sys.stderr, flush=True)
+        return 0
+
+    zip_url = AUDIO_ZIP_URL.format(teg_id=teg_id)
+    audio_asset_dir = db.ensure_asset_dir(os.getcwd(), issue_date, issue_id, 'audio')
+
+    # Check if files already extracted (skip re-download)
+    existing = [f for f in os.listdir(audio_asset_dir) if f.endswith('.mp3')]
+    if existing:
+        print(f'  Audio zip already extracted ({len(existing)} mp3s), matching...',
+              flush=True)
+        mp3_names = existing
+    else:
+        print(f'  Downloading audio zip: {zip_url}', flush=True)
+        try:
+            raw = utils.fetch(zip_url, timeout=180)
+        except Exception as exc:
+            print(f'  Audio zip download failed: {exc}', file=sys.stderr, flush=True)
+            return 0
+        if raw[:2] != b'PK':
+            print(f'  Audio zip is not a valid zip (first bytes: {raw[:4]})',
+                  file=sys.stderr, flush=True)
+            return 0
+        import zipfile, io
+        mp3_names = []
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if not name.endswith('.mp3'):
+                    continue
+                dest = os.path.join(audio_asset_dir, os.path.basename(name))
+                with zf.open(name) as src, open(dest, 'wb') as dst:
+                    dst.write(src.read())
+                mp3_names.append(os.path.basename(name))
+        print(f'  Extracted {len(mp3_names)} mp3s from audio zip', flush=True)
+
+    # Build article lookup: (section_key, headline_key) → (article_id, url)
+    # and also a flat list for headline-only matching.
+    article_by_keys = {}
+    article_by_headline = {}
+    for section in sections:
+        section_name = (section.get('name') or '').strip()
+        for article in section.get('articles') or ():
+            url = utils.canonical_article_url(article.get('url') or '')
+            if not url:
+                continue
+            headline = (article.get('headline') or '').strip()
+            row = conn.execute(
+                'SELECT id FROM article WHERE edition_id=? AND url=?',
+                (edition_db_id, url),
+            ).fetchone()
+            if not row:
+                continue
+            aid = row['id']
+            sk = utils.normalize_text_key(section_name)
+            hk = utils.normalize_text_key(headline)
+            article_by_keys[(sk, hk)] = aid
+            article_by_headline[hk] = aid
+
+    # Match each mp3 to an article
+    matched = 0
+    unmatched = 0
+    for name in sorted(mp3_names):
+        m = _AUDIO_NAME_RE.match(name)
+        if not m:
+            unmatched += 1
+            continue
+        section_name = m.group(2).replace('-', ' ').strip()
+        title = m.group(3).replace('-', ' ').replace('_', "'").strip()
+        sk = utils.normalize_text_key(section_name)
+        hk = utils.normalize_text_key(title)
+
+        aid = article_by_keys.get((sk, hk))
+        if aid is None:
+            # Fallback: headline-only match
+            aid = article_by_headline.get(hk)
+        if aid is None:
+            unmatched += 1
+            continue
+
+        rel_path = db.audio_local_path(issue_date, issue_id,
+                                        AUDIO_CDN_URL.format(filename=name))
+        audio_url = AUDIO_CDN_URL.format(filename=name)
+        conn.execute(
+            'UPDATE article SET audio_url=?, audio_path=? WHERE id=?',
+            (audio_url, rel_path, aid),
+        )
+        matched += 1
+
+    conn.commit()
+    print(f'Audio zip: {matched} matched, {unmatched} unmatched '
+          f'({len(mp3_names)} total)', flush=True)
+    return len(mp3_names)
+
+
 # ── Topic fallback ──────────────────────────────────────────────────────────
 
 def article_url_date(url):
@@ -734,6 +884,12 @@ def main():
             except Exception as exc:
                 print(f'  failed audio: {exc}', file=sys.stderr, flush=True)
         print(f'Audio: {audio_downloaded} downloaded, {audio_skipped} skipped', flush=True)
+    else:
+        # No per-article narration URLs (narration.url is null in anonymous
+        # _next/data).  Fall back to the complete-edition audio zip.
+        print('No per-article audio URLs; trying edition audio zip...', flush=True)
+        download_audio_zip(issue_date, issue_id, edition_db_id, conn,
+                           edition.get('sections') or [])
 
     # ── 6. Summary ──────────────────────────────────────────────────────
     article_count = conn.execute(

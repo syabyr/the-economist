@@ -57,15 +57,17 @@ def get_full_article_text_with_markers(article_data):
         frag_list = []
         utils.collect_fragments(lead, frag_list)
         for ftype, html in frag_list:
-            fragments.append(f'<!-- FRAGMENT type="{ftype}" -->')
-            fragments.append(html)
+            if html and html.strip():
+                fragments.append(f'<!-- FRAGMENT type="{ftype}" -->')
+                fragments.append(html)
 
     for node in article_data.get('body') or ():
         frag_list = []
         utils.collect_fragments(node, frag_list)
         for ftype, html in frag_list:
-            fragments.append(f'<!-- FRAGMENT type="{ftype}" -->')
-            fragments.append(html)
+            if html and html.strip():
+                fragments.append(f'<!-- FRAGMENT type="{ftype}" -->')
+                fragments.append(html)
 
     return '\n\n'.join(fragments)
 
@@ -86,10 +88,15 @@ def parse_translated_fragments(translated_text):
     return fragments
 
 
-def call_nvidia_api(full_text, model='google/gemma-4-31b-it', max_tokens=16384, temperature=0.1):
+DEFAULT_MODEL = 'minimaxai/minimax-m3.1-flash'
+
+
+def call_nvidia_api(full_text, model=None, max_tokens=16384, temperature=0.1):
     """Call NVIDIA API for full-article translation."""
+    model = model or os.environ.get('ECONOMIST_TRANSLATE_MODEL') or DEFAULT_MODEL
     api_key = os.environ.get('NVIDIA_API_KEY')
     base_url = 'https://integrate.api.nvidia.com/v1'
+    timeout = utils.env_int('ECONOMIST_TRANSLATE_TIMEOUT', 300)
 
     system_prompt = '''You are an expert translator specializing in translating English magazine articles to Simplified Chinese.
 
@@ -134,19 +141,40 @@ Article to translate:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            with urlopen(req, timeout=600) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
-                return result['choices'][0]['message']['content'].strip()
+                content = (result.get('choices') or [{}])[0].get('message', {}).get('content')
+                if not content:
+                    raise RuntimeError(
+                        f'Empty response from {model}: {json.dumps(result)[:300]}'
+                    )
+                return content.strip()
+        except TimeoutError as e:
+            # The endpoint occasionally stalls on a single request; retry a
+            # couple of times before giving up on the article.
+            if attempt < max_retries - 1:
+                delay = 15 * (attempt + 1)
+                print(f'  Timeout after {timeout}s waiting for {model}, '
+                      f'retrying in {delay}s (attempt {attempt+1}/{max_retries})',
+                      file=sys.stderr, flush=True)
+                time.sleep(delay)
+                continue
+            print(f'  Timeout after {timeout}s waiting for {model}', file=sys.stderr)
+            print('  -> The model may not be provisioned for this account. '
+                  f'Try --model {DEFAULT_MODEL}', file=sys.stderr)
+            raise
         except HTTPError as e:
             body = ''
             try:
                 body = e.read().decode('utf-8', 'replace')
             except Exception:
                 pass
-            # 410 Gone = model end-of-life; no point retrying
-            if e.code == 410:
-                print(f'  Model {model} is no longer available (HTTP 410): {body[:200]}', file=sys.stderr)
-                print('  -> Use --model to specify a current model (try: google/gemma-4-31b-it)', file=sys.stderr)
+            # 410 Gone = model end-of-life; 404 = not provisioned for this account.
+            if e.code in (404, 410):
+                print(f'  Model {model} is not available (HTTP {e.code}): {body[:200]}',
+                      file=sys.stderr)
+                print(f'  -> Use a working model, e.g. --model {DEFAULT_MODEL} '
+                      '(or nvidia/nemotron-3.5-bolt-e4b)', file=sys.stderr)
                 raise
             if e.code in [504, 500, 502, 429] and attempt < max_retries - 1:
                 delay = 30 * (attempt + 1)
@@ -205,10 +233,11 @@ def get_source_fragments(article_data):
     for node in article_data.get('body') or ():
         utils.collect_fragments(node, fragments)
 
-    return fragments
+    return [(ftype, html) for ftype, html in fragments
+            if html and html.strip()]
 
 
-def translate_article_full(article, model='meta/llama-3.1-8b-instruct', force=False):
+def translate_article_full(article, model=DEFAULT_MODEL, force=False):
     """Translate an entire article using full-article mode.
 
     Returns: (success, num_translated, num_fragments)
@@ -233,10 +262,13 @@ def translate_article_full(article, model='meta/llama-3.1-8b-instruct', force=Fa
     # Parse fragments
     translated_fragments = parse_translated_fragments(translated)
 
-    # Verify
+    # Verify before storing: a marker-count mismatch would misalign every
+    # following fragment, so refuse to write a corrupted cache.
     if len(translated_fragments) != len(source_fragments):
-        print(f'  WARNING: Fragment count mismatch! Source: {len(source_fragments)}, Translated: {len(translated_fragments)}', file=sys.stderr)
-        print(f'  WARNING: Some translations may be misaligned', file=sys.stderr)
+        raise RuntimeError(
+            f'Fragment count mismatch: source {len(source_fragments)}, '
+            f'translated {len(translated_fragments)}; not storing misaligned translations'
+        )
 
     # Store
     stored = store_full_translation(conn, article['article_key'], source_fragments, translated_fragments, model)
@@ -254,7 +286,8 @@ def main():
     parser.add_argument('--article-index', type=int, default=None, help='Only translate article N (0-indexed)')
     parser.add_argument('--force', action='store_true', help='Re-translate even if translations exist')
     parser.add_argument('--paragraph-mode', action='store_true', help='Use legacy paragraph-by-paragraph translation')
-    parser.add_argument('--model', default='google/gemma-4-31b-it', help='LLM model to use for translation')
+    parser.add_argument('--model', default=os.environ.get('ECONOMIST_TRANSLATE_MODEL') or DEFAULT_MODEL,
+                        help=f'LLM model to use for translation (default: {DEFAULT_MODEL})')
     args = parser.parse_args()
 
     issue_date = args.issue_date
@@ -317,7 +350,7 @@ def main():
             continue
 
         headline = json.loads(gzip.decompress(article['body_json'])).get('headline', 'N/A')
-        print(f'\\n[{idx+1}/{len(articles)}] Article: {headline}', flush=True)
+        print(f'\n[{idx+1}/{len(articles)}] Article: {headline}', flush=True)
         print(f'  Key: {article["article_key"]}', flush=True)
 
         try:
@@ -335,7 +368,7 @@ def main():
             import traceback
             traceback.print_exc()
 
-    print(f'\\n=== SUMMARY ===', flush=True)
+    print(f'\n=== SUMMARY ===', flush=True)
     print(f'Successful articles: {success_count}/{len([a for a in articles if a["body_json"]])}', flush=True)
     print(f'Total fragments translated: {total_translated}', flush=True)
     print(f'Total fragments processed: {total_fragments}', flush=True)

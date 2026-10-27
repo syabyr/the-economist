@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Phase 3: Build mobi/pdf via calibre.
+"""Phase 3: Build mobi/pdf/epub via calibre.
 
 Usage:
-    python3 build_issue.py YYYY-MM-DD ISSUE_ID [--format mobi,pdf]
+    python3 tools/build_issue.py YYYY-MM-DD ISSUE_ID [--format mobi,pdf,epub]
 
 The calibre bridge exports a temporary directory that matches the old file-cache
 format, then runs ebook-convert against the existing economist.recipe.
@@ -19,6 +19,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+# Allow running as `python3 tools/build_issue.py` from anywhere.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 import db
 import utils
@@ -67,7 +71,7 @@ def export_temp_cache(conn, edition, articles, issue_date, issue_id):
     # Resize and copy images to temp dir (instead of symlink to full-res)
     max_width = int(os.environ.get('ECONOMIST_IMAGE_WIDTH', '600'))
     quality = int(os.environ.get('ECONOMIST_IMAGE_QUALITY', '80'))
-    src_images = os.path.join(os.getcwd(), 'images', f'{issue_date}-{issue_id}')
+    src_images = os.path.join(REPO_ROOT, 'images', f'{issue_date}-{issue_id}')
     if os.path.isdir(src_images):
         try:
             from PIL import Image
@@ -92,8 +96,11 @@ def export_temp_cache(conn, edition, articles, issue_date, issue_id):
                 shutil.copy2(src, dst)
 
     # Export translate.json with recipe-compatible keys
-    model = os.environ.get('ECONOMIST_TRANSLATE_MODEL', 'nvidia/riva-translate-4b-instruct-v1.1')
+    # The recipe keys its translation cache by (model + fragment). Use the
+    # model recorded on the cached translations, otherwise every fragment
+    # misses when translate.py ran with a different model than the default.
     translations = db.get_translations_for_edition(conn, edition['id'])
+    model = dominant_translation_model(translations)
     if translations:
         cache = {}
         for t in translations:
@@ -102,17 +109,32 @@ def export_temp_cache(conn, edition, articles, issue_date, issue_id):
         with open(os.path.join(tmpdir, 'translate.json'), 'w', encoding='utf-8') as fh:
             json.dump(cache, fh, ensure_ascii=False, indent=2, sort_keys=True)
 
-    return tmpdir
+    return tmpdir, model
 
 
-def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats):
+def dominant_translation_model(translations):
+    """Model used for most cached translations of this edition."""
+    counts = {}
+    for t in translations:
+        name = t.get('model')
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    if counts:
+        return max(counts, key=counts.get)
+    return (
+        os.environ.get('ECONOMIST_TRANSLATE_MODEL')
+        or 'nvidia/riva-translate-4b-instruct-v1.1'
+    )
+
+
+def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats, translate_model=None):
     """Run ebook-convert via calibre recipe."""
     year = issue_date[:4]
     recipe_file = f'TheEconomist-{issue_date}-{issue_id}.recipe'
     output_base = f'TheEconomist-{issue_date}-{issue_id}'
 
     # Generate temp recipe from economist.recipe
-    recipe_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'economist.recipe')
+    recipe_src = os.path.join(REPO_ROOT, 'economist.recipe')
     with open(recipe_src, 'r', encoding='utf-8') as fh:
         recipe_content = fh.read()
     recipe_content = re.sub(
@@ -131,14 +153,20 @@ def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats):
     if os.path.isfile(os.path.join(tmpdir, 'translate.json')):
         env['ECONOMIST_TRANSLATE_CACHE'] = os.path.join(tmpdir, 'translate.json')
         env['ECONOMIST_TRANSLATE_ZH'] = '1'
-        env.setdefault('ECONOMIST_TRANSLATE_PROVIDER',
-                       os.environ.get('ECONOMIST_TRANSLATE_PROVIDER', 'nvidia'))
-        env.setdefault('ECONOMIST_TRANSLATE_MODEL',
-                       os.environ.get('ECONOMIST_TRANSLATE_MODEL', 'nvidia/riva-translate-4b-instruct-v1.1'))
-        env.setdefault('ECONOMIST_TRANSLATE_SOURCE_LANGUAGE',
-                       os.environ.get('ECONOMIST_TRANSLATE_SOURCE_LANGUAGE', 'English'))
-        env.setdefault('ECONOMIST_TRANSLATE_TARGET_LANGUAGE',
-                       os.environ.get('ECONOMIST_TRANSLATE_TARGET_LANGUAGE', 'Simplified Chinese'))
+        env['ECONOMIST_TRANSLATE_PROVIDER'] = (
+            os.environ.get('ECONOMIST_TRANSLATE_PROVIDER') or 'nvidia'
+        )
+        env['ECONOMIST_TRANSLATE_MODEL'] = (
+            translate_model
+            or os.environ.get('ECONOMIST_TRANSLATE_MODEL')
+            or 'nvidia/riva-translate-4b-instruct-v1.1'
+        )
+        env['ECONOMIST_TRANSLATE_SOURCE_LANGUAGE'] = (
+            os.environ.get('ECONOMIST_TRANSLATE_SOURCE_LANGUAGE') or 'English'
+        )
+        env['ECONOMIST_TRANSLATE_TARGET_LANGUAGE'] = (
+            os.environ.get('ECONOMIST_TRANSLATE_TARGET_LANGUAGE') or 'Simplified Chinese'
+        )
 
     cover_args = []
     if cover_path and os.path.isfile(cover_path):
@@ -149,8 +177,9 @@ def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats):
 
     if 'mobi' in formats:
         print('Building .mobi ...', flush=True)
+        built = os.path.join(REPO_ROOT, f'{output_base}.mobi')
         subprocess.run([
-            'ebook-convert', recipe_file, f'{output_base}.mobi',
+            'ebook-convert', recipe_file, built,
             '--output-profile=kindle_oasis',
             f'--pubdate={issue_date}',
             '-vv',
@@ -158,15 +187,17 @@ def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats):
             '--authors=TheEconomist',
             f'--title=TheEconomist-{issue_date}-{issue_id}',
         ] + cover_args, env=env, check=True)
-        os.makedirs(os.path.join('output', year), exist_ok=True)
-        shutil.move(f'{output_base}.mobi', os.path.join('output', year, f'{output_base}.mobi'))
+        dest_dir = os.path.join(REPO_ROOT, 'output', year)
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.move(built, os.path.join(dest_dir, f'{output_base}.mobi'))
         results.append('mobi')
         print(f'  -> output/{year}/{output_base}.mobi', flush=True)
 
     if 'pdf' in formats:
         print('Building .pdf ...', flush=True)
+        built = os.path.join(REPO_ROOT, f'{output_base}.pdf')
         subprocess.run([
-            'ebook-convert', recipe_file, f'{output_base}.pdf',
+            'ebook-convert', recipe_file, built,
             '--paper-size=a4',
             '--pdf-page-numbers',
             '--pdf-page-margin-bottom=42',
@@ -176,10 +207,28 @@ def build_calibre(issue_date, issue_id, tmpdir, cover_path, formats):
             '-vv',
             f'--title=TheEconomist-{issue_date}-{issue_id}',
         ] + cover_args, env=env, check=True)
-        os.makedirs(os.path.join('output', 'pdf', year), exist_ok=True)
-        shutil.move(f'{output_base}.pdf', os.path.join('output', 'pdf', year, f'{output_base}.pdf'))
+        dest_dir = os.path.join(REPO_ROOT, 'output', 'pdf', year)
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.move(built, os.path.join(dest_dir, f'{output_base}.pdf'))
         results.append('pdf')
         print(f'  -> output/pdf/{year}/{output_base}.pdf', flush=True)
+
+    if 'epub' in formats:
+        print('Building .epub ...', flush=True)
+        built = os.path.join(REPO_ROOT, f'{output_base}.epub')
+        subprocess.run([
+            'ebook-convert', recipe_file, built,
+            '--output-profile=tablet',
+            f'--pubdate={issue_date}',
+            '-vv',
+            '--authors=TheEconomist',
+            f'--title=TheEconomist-{issue_date}-{issue_id}',
+        ] + cover_args, env=env, check=True)
+        dest_dir = os.path.join(REPO_ROOT, 'output', 'epub', year)
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.move(built, os.path.join(dest_dir, f'{output_base}.epub'))
+        results.append('epub')
+        print(f'  -> output/epub/{year}/{output_base}.epub', flush=True)
 
     # Cleanup
     if os.path.isfile(recipe_file):
@@ -195,8 +244,8 @@ def main():
     parser = argparse.ArgumentParser(description='Build mobi/pdf from SQLite cache')
     parser.add_argument('issue_date', help='YYYY-MM-DD')
     parser.add_argument('issue_id', help='Issue ID')
-    parser.add_argument('--format', default='mobi,pdf',
-                        help='Comma-separated: mobi,pdf (default: mobi,pdf)')
+    parser.add_argument('--format', default='mobi,pdf,epub',
+                        help='Comma-separated: mobi,pdf,epub (default: mobi,pdf,epub)')
     args = parser.parse_args()
 
     formats = [f.strip() for f in args.format.split(',')]
@@ -217,26 +266,27 @@ def main():
         print('No articles found for this edition.', file=sys.stderr)
         return 1
 
-    calibre_formats = [f for f in formats if f in ('mobi', 'pdf')]
+    calibre_formats = [f for f in formats if f in ('mobi', 'pdf', 'epub')]
     if not calibre_formats:
-        print('No valid format specified (mobi, pdf).', file=sys.stderr)
+        print('No valid format specified (mobi, pdf, epub).', file=sys.stderr)
         return 1
 
     # Find cover image
     cover_path = edition.get('cover_path') or ''
     if cover_path and not os.path.isabs(cover_path):
-        cover_path = os.path.join(os.getcwd(), cover_path)
+        cover_path = os.path.join(REPO_ROOT, cover_path)
     if not cover_path or not os.path.isfile(cover_path):
         # Try to find from images dir
-        src_images = os.path.join(os.getcwd(), 'images', f'{issue_date}-{issue_id}')
+        src_images = os.path.join(REPO_ROOT, 'images', f'{issue_date}-{issue_id}')
         if os.path.isdir(src_images):
             candidates = sorted(glob.glob(os.path.join(src_images, '*.jpg')))
             if candidates:
                 cover_path = candidates[0]
 
-    tmpdir = export_temp_cache(conn, edition, articles, issue_date, issue_id)
+    tmpdir, translate_model = export_temp_cache(conn, edition, articles, issue_date, issue_id)
     try:
-        results = build_calibre(issue_date, issue_id, tmpdir, cover_path, calibre_formats)
+        results = build_calibre(issue_date, issue_id, tmpdir, cover_path,
+                                calibre_formats, translate_model)
         print(f'Built: {", ".join(results)}', flush=True)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

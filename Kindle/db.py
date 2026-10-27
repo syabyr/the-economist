@@ -598,27 +598,36 @@ def backfill_article_slugs(conn):
 
 
 def get_article_by_slug(conn, section_slug, year, month, day, article_slug):
-    """Find article by URL components. First tries exact match on url column (most reliable),
-    then falls back to section_slug + slug + date_published, then just section_slug + slug."""
-    url_to_match = f'/{section_slug}/{year}/{month:02d}/{day:02d}/{article_slug}'
+    """Find article by URL components.
+
+    article.url holds absolute economist.com URLs, so the path from the request
+    is matched against both the absolute and the relative spelling. Recurring
+    slugs ("the-world-this-week/politics" exists every week) make the fallbacks
+    ambiguous, so they always prefer the newest edition.
+    """
+    url_path = f'/{section_slug}/{year}/{month:02d}/{day:02d}/{article_slug}'
     row = conn.execute("""
         SELECT * FROM article
-        WHERE url=?
+        WHERE url IN (?, ?)
+        ORDER BY edition_id DESC
         LIMIT 1
-    """, (url_to_match,)).fetchone()
+    """, (url_path, 'https://www.economist.com' + url_path)).fetchone()
     if not row:
-        # Fallback: try matching by section_slug and slug with date_published
+        # Fallback: slug + publication date (URL date and date_published can
+        # differ by a day, so fall through to the newest edition instead).
         date_str = f'{year}-{month:02d}-{day:02d}'
         row = conn.execute("""
             SELECT * FROM article
             WHERE section_slug=? AND slug=? AND substr(date_published, 1, 10)=?
+            ORDER BY edition_id DESC
             LIMIT 1
         """, (section_slug, article_slug, date_str)).fetchone()
     if not row:
-        # Final fallback: just section_slug + slug
+        # Final fallback: section_slug + slug, newest edition wins.
         row = conn.execute("""
             SELECT * FROM article
             WHERE section_slug=? AND slug=?
+            ORDER BY edition_id DESC
             LIMIT 1
         """, (section_slug, article_slug)).fetchone()
     return dict(row) if row else None

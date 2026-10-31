@@ -625,7 +625,7 @@ def main():
         )
     conn.commit()
     print(f'Updated {len(updated)} article(s) in economist.sqlite.')
-    print('Run translate.py for this edition to translate the new paragraphs.')
+    print('Run tools/translate.py for this edition to translate the new paragraphs.')
     return 0
 
 

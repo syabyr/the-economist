@@ -98,7 +98,7 @@ def export_temp_cache(conn, edition, articles, issue_date, issue_id):
     # Export translate.json with recipe-compatible keys
     # The recipe keys its translation cache by (model + fragment). Use the
     # model recorded on the cached translations, otherwise every fragment
-    # misses when translate.py ran with a different model than the default.
+    # misses when tools/translate.py ran with a different model than the default.
     translations = db.get_translations_for_edition(conn, edition['id'])
     model = dominant_translation_model(translations)
     if translations:
